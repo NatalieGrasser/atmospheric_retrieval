@@ -47,12 +47,12 @@ class Retrieval:
         self.pRT_key = f'{self.parameters.params["opa_mode"]}_name'
         self.cloud_mode = self.parameters.params["cloud_mode"]
         self.cloud_species = self.parameters.params.get('cloud_species', None)
+        self.cloud_species_pRT = None
         if self.cloud_species:
             self.cloud_species_pRT=[]
             for cloud_species_i in self.cloud_species:
                 pRT_name = self.species_info.loc[f'{cloud_species_i}_{self.cloud_mode}',self.pRT_key]
                 self.cloud_species_pRT.append(pRT_name)
-
 
         self.n_atm_layers = self.parameters.params['n_atm_layers']
         log_p_upper = self.parameters.params['log_P_upper']
@@ -112,7 +112,7 @@ class Retrieval:
                                         err_eff=self.err_eff[i],max_separation=maxval)
             if use_GP==False: # use simple diagonal covariance matrix
                 self.Cov[i] = Covariance(err=self.data_err[i,mask_i])
-        self.LogLike = LogLikelihood(retr_obj=self,scale_flux=self.parameters.params['scale_flux'],scale_err=True)
+        self.LogLike = LogLikelihood(retr_obj=self)
 
         # redo radtrans objects when introdocuing new species
         self.radtrans_objects=self.get_radtrans_objects(redo=redo)
@@ -134,13 +134,13 @@ class Retrieval:
 
     def get_radtrans_objects(self,redo=False,for_species=None):
 
-        lines_species=self.species_pRT.copy() if for_species==None else for_species
+        self.line_species=self.species_pRT.copy() if for_species==None else for_species
         continuum_opacities = ['H2-H2', 'H2-He']
-        if 'H-' in lines_species:
-            lines_species.remove('H-') # not a line species
+        if 'H-' in self.line_species:
+            self.line_species.remove('H-') # not a line species
             continuum_opacities.append('H-')
         if for_species!=None:
-            lines_species = [self.species_info.loc[lines_species,self.pRT_key]]
+            self.line_species = [self.species_info.loc[self.line_species,self.pRT_key]]
         if for_species==None: # none specified
             file=pathlib.Path(f'{self.target.project_path}/radtrans_objects.pickle')
             not_exists=False
@@ -152,11 +152,11 @@ class Retrieval:
                 
         if for_species!=None or not_exists:
             radtrans_objects=[]
-            CIA = ['H2--H2-NatAbund__BoRi.R831_0.6-250mu', 'H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu']
+            self.CIA = ['H2--H2-NatAbund__BoRi.R831_0.6-250mu', 'H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu']
             if 'H2O' in self.species_pRT:
-                CIA.append('H2-O--H2-O-NatAbund.DeltaWavenumber10_0.5-77mu')
+                self.CIA.append('H2-O--H2-O-NatAbund.DeltaWavenumber10_0.5-77mu')
             if 'CO2' in self.species_pRT:
-                CIA.append('C-O2--C-O2-NatAbund.DeltaWavelength1e-6_3-100mu')
+                self.CIA.append('C-O2--C-O2-NatAbund.DeltaWavelength1e-6_3-100mu')
 
             if self.instrument=='CRIRES':
                 self.atm_segments = self.n_orders
@@ -184,14 +184,14 @@ class Retrieval:
                 wlmin = wlmin * (1 - frac)
                 wlmax = wlmax * (1 + frac)
                 wl_unit = self.parameters.params['wavelength_unit'] # astopy unit
-                wlen_range_um = (np.array([wlmin,wlmax])*wl_unit).to(u.um).value
+                self.wlen_range_um = (np.array([wlmin,wlmax])*wl_unit).to(u.um).value
 
                 radtrans = Radtrans(
                             pressures=self.pressure,
-                            line_species=lines_species,
+                            line_species=self.line_species,
                             rayleigh_species= ['H2', 'He'],
-                            gas_continuum_contributors=CIA,
-                            wavelength_boundaries=wlen_range_um, # microns
+                            gas_continuum_contributors=self.CIA,
+                            wavelength_boundaries=self.wlen_range_um, # microns
                             cloud_species=self.cloud_species_pRT,
                             line_opacity_mode=self.parameters.params['opa_mode'],
                             line_by_line_opacity_sampling=self.lbl_opacity_sampling)# take every nth point
@@ -230,7 +230,7 @@ class Retrieval:
                         verbose=True,const_efficiency_mode=cef_mode, sampling_efficiency = smp_eff,
                         n_live_points=N_live_points,resume=resume,
                         evidence_tolerance=evidence_tolerance, # high number -> stops earlier
-                        dump_callback=self.PMN_callback,n_iter_before_update=5)
+                        dump_callback=self.PMN_callback,n_iter_before_update=50)
 
     def PMN_callback(self,n_samples,n_live,n_params,live_points,posterior, 
                     stats,max_ln_L,ln_Z,ln_Z_err,nullcontext):
@@ -245,6 +245,7 @@ class Retrieval:
         self.model_flux[~self.mask_isfinite] = np.nan
 
         figs.summary_plot(self,show_params='all')
+        figs.plot_contribution_per_species(self)
         if self.use_partial_pressure:
             plot_species = self.species_names.copy()
             plot_species.extend(s for s in ['H2','He'] if s not in plot_species)
@@ -582,7 +583,7 @@ class Retrieval:
             post=pathlib.Path(f'{self.output_dir}/posterior_dict.pickle') 
             save_pickle(self.posterior,post) # overwrite with ratio posteriors
 
-    def evaluate(self,only_abundances=False,only_params=None,split_corner=True,
+    def evaluate(self,only_params=None,split_corner=True,
                  callback_label='final_',makefigs=True):
         self.callback_label=callback_label
         self.PMN_analyse() # get/save bestfit params and final posterior
@@ -590,7 +591,7 @@ class Retrieval:
         self.model_flux[~self.mask_isfinite] = np.nan
         if makefigs:
             if callback_label=='final_':
-                figs.make_all_plots(self,only_abundances=only_abundances,only_params=only_params,split_corner=split_corner)
+                figs.make_all_plots(self,only_params=only_params,split_corner=split_corner)
             else:
                 figs.summary_plot(self,show_params='all')
         CCF_results=pathlib.Path(f'{self.output_dir}/CCF_ACF_dict.pickle')
@@ -860,7 +861,3 @@ class Retrieval:
             os.system(f"mv {output_file} {retrieval_output_dir}")
 
         print('\n ----------------- Done ---------------- \n')
-
-        
-        
-

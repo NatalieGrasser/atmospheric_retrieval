@@ -142,6 +142,7 @@ def init_retrieval(target,
         'remove_continuum': False, # remove continuum of spectrum with np.fft
         'normalize_spectrum': True, # normalize by median
         'scale_flux': True, # compute optimal linear scaling factor between model and data
+        'scale_err': True, # allow error scaling
 
         # if Guillot PT used, these priors must be defined (not used  other PT type)
         'T_int_prior': [20,200],  # internal temperature

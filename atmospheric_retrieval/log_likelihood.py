@@ -3,7 +3,7 @@ from scipy.special import loggamma # gamma function
 
 class LogLikelihood:
 
-    def __init__(self,retr_obj,scale_flux=True,scale_err=True):
+    def __init__(self,retr_obj):
         """
         Log-likelihood evaluation based on Appendix D in Ruffio et al. (2019).
         DOI: https://doi.org/10.3847/1538-3881/ab4594
@@ -11,14 +11,6 @@ class LogLikelihood:
         Parameters
         ----------
         retr_obj : Retrieval class object with required attributes
-
-        scale_flux : bool
-            If True, compute the optimal linear scaling factor(s) between model
-            and observed spectra.
-
-        scale_err : bool
-            If True, allow a scaling of the data uncertainties that maximizes
-            to account for potential under/over-estimated.
         """
 
         inherit_attributes = ['n_parts','n_pixels','data_flux',
@@ -35,8 +27,7 @@ class LogLikelihood:
 
         self.target_solar_metall = retr_obj.parameters.params['target_solar_metall']
         self.scale_flux   = retr_obj.parameters.params['scale_flux']
-
-        self.scale_err    = scale_err
+        self.scale_err    = retr_obj.parameters.params['scale_err']
         self.N_d_total    = self.mask_isfinite.sum() # number of degrees of freedom / valid datapoints
         self.alpha = 2 # from Ruffio+2019
         self.N_phi = 1 # number of linear scaling parameters

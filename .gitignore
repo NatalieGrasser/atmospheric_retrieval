@@ -9,4 +9,7 @@
 !Sing+2024_PT.txt
 !config.py
 
+convert_pRT2_to_pRT3_opas.ipynb
+
 *.out
+*debugging.ipynb

@@ -320,138 +320,151 @@ class pRT_spectrum:
         """
         Compute equilibrium chemistry using pre-tabulated interpolation grids.
 
-        Supports optional scaling (flexible equilibrium) and quenching.
-
         Returns
         -------
         dict
-            Mass fractions.
+            Mass fractions (pRT species names as keys).
         """
 
+        # --- ensure required species ---
         species_pRT.extend(s for s in ['H2','He'] if s not in species_pRT)
         self.species_hill.extend(s for s in ['H2','He'] if s not in self.species_hill)
 
-        if 'H-' in species_pRT:  # required for calculation
+        if 'H-' in species_pRT:
             species_pRT.extend(s for s in ['e-','H'] if s not in species_pRT)
             self.species_hill.extend(s for s in ['e-','H'] if s not in self.species_hill)
+
+        if self.add_species is not None:
+            species_pRT.extend(self.species_info.loc[self.add_species, self.pRT_key])
+            self.species_hill.extend(self.species_info.loc[self.add_species, 'Hill_notation'])
+
+        # --- load interpolation tables ---
+        import h5py, pathlib
+        from scipy.interpolate import RegularGridInterpolator
+
+        def load_hdf5(file, key):
+            with h5py.File(f'{path_tables}/{file}', 'r') as f:
+                return f[key][...]
+
+        self.P_grid  = load_hdf5('grid.hdf5', 'P')
+        self.T_grid  = load_hdf5('grid.hdf5', 'T')
+        self.CO_grid = load_hdf5('grid.hdf5', 'C/O')
+        self.FeH_grid = load_hdf5('grid.hdf5', 'Fe/H')
+
+        points = (self.P_grid, self.T_grid, self.CO_grid, self.FeH_grid)
+
+        interp_tables = {}
+        for species_i, hill_i in zip(species_pRT, self.species_hill):
+
+            if species_i in ['e-', 'H']:
+                hill_i = 'e-' if species_i == 'e-' else 'H'
+
+            equ_table = pathlib.Path(f'{path_tables}/{hill_i}.hdf5')
+            if not equ_table.exists():
+                continue
+
+            arr = load_hdf5(f'{hill_i}.hdf5', key='log_VMR')
+
+            interp_tables[species_i] = RegularGridInterpolator(
+                values=arr[:,:,:,0,:],
+                points=points,
+                method='linear'
+            )
+
+        # --- helper ---
+        def apply_bounds(val, grid):
+            val = np.array(val)
+            val[val > grid.max()] = grid.max()
+            val[val < grid.min()] = grid.min()
+            return val
+
+        # --- prepare state ---
+        P = apply_bounds(self.pressure.copy(), self.P_grid)
+        T = self.temperature.copy()
+
+        CO  = apply_bounds(np.array([params.get('C/O')]), self.CO_grid)[0]
+        FeH = apply_bounds(np.array([params.get('Fe/H')]), self.FeH_grid)[0]
         
-        if self.add_species!=None:
-            species_pRT.extend((self.species_info.loc[self.add_species,self.pRT_key]))
-            self.species_hill.extend((self.species_info.loc[self.add_species,'Hill_notation']))
+        # Clip T for interpolation (avoid out-of-bounds)
+        T_max = self.T_grid.max()
+        T_clip = np.clip(T, self.T_grid.min(), T_max)
 
-        def load_interp_tables():
-            import h5py, pathlib
-            def load_hdf5(file, key):
-                with h5py.File(f'{path_tables}/{file}', 'r') as f:
-                    return f[key][...]
+        self.VMRs = {}
 
-            # Load the interpolation grid (ignore N/O)
-            self.P_grid  = load_hdf5('grid.hdf5', 'P')
-            self.T_grid  = load_hdf5('grid.hdf5', 'T')
-            self.CO_grid = load_hdf5('grid.hdf5', 'C/O')
-            self.FeH_grid = load_hdf5('grid.hdf5', 'Fe/H')
-            points = (self.P_grid, self.T_grid, self.CO_grid, self.FeH_grid)
+        const_species = self.params.get('const_species', [])
+        gaussian_species = self.params.get('gaussian_species', [])
 
-            self.interp_tables = {}
-            for species_i, hill_i in zip([*species_pRT, 'MMW'], [*self.species_hill, 'MMW']):
-                key = 'MMW' if species_i == 'MMW' else 'log_VMR'
-                if species_i in ['e-', 'H']:
-                    hill_i = 'e-' if species_i == 'e-' else 'H'
-                equ_table = pathlib.Path(f'{path_tables}/{hill_i}.hdf5')
-                if equ_table.exists():
-                    arr = load_hdf5(f'{hill_i}.hdf5', key=key)  # Load equchem abundance tables
-                self.interp_tables[species_i] = RegularGridInterpolator(
-                    values=arr[:,:,:,0,:], points=points, method='linear'
-                )
+        # --- compute VMRs ---
+        for pRT_name, interp_func in interp_tables.items():
 
-        def get_VMRs(ParamTable):
-            self.VMRs = {}
+            
+            T_clip = np.clip(T, self.T_grid.min(), self.T_grid.max())
+            arr = interp_func((P, T_clip, CO, FeH))
 
-            def apply_bounds(val, grid):
-                val = np.array(val)
-                val[val > grid.max()] = grid.max()
-                val[val < grid.min()] = grid.min()
-                return val
+            # hold VMR constant above 6000K, limit of equchem tables
+            # Find the last valid layer below T_max
+            valid_mask = T <= T_max
+            if np.any(valid_mask):
+                last_valid_idx = np.where(valid_mask)[0][-1]
+                arr[~valid_mask] = arr[last_valid_idx]
 
-            # Update the parameters
-            self.CO  = ParamTable.get('C/O')
-            self.FeH = ParamTable.get('Fe/H')
+            species_i = self.species_info[
+                self.species_info[self.pRT_key] == pRT_name
+            ].index[0]
 
-            # Apply the bounds of the grid
-            P = apply_bounds(self.pressure.copy(), grid=self.P_grid)
-            T = self.temperature.copy()
-            CO  = apply_bounds(np.array([self.CO]).copy(), grid=self.CO_grid)[0]
-            FeH = apply_bounds(np.array([self.FeH]).copy(), grid=self.FeH_grid)[0]
+            # --- overrides ---
+            if species_i in gaussian_species:
+                vmr = self.compute_gaussian_VMR(species_i, params)
 
-            T_max = self.T_grid.max()
+            elif species_i in const_species:
+                log_vmr = params.get(f'log_{species_i}')
+                if log_vmr is None:
+                    raise ValueError(f'Missing parameter: log_{species_i}')
+                vmr = np.full_like(P, 10**log_vmr)
 
-            # Interpolate abundances
-            for pRT_name_i, interp_func_i in self.interp_tables.items():
+            else:
+                vmr = 10**arr
 
-                # Clip T for interpolation (avoid out-of-bounds)
-                T_clip = np.clip(T, self.T_grid.min(), self.T_grid.max())
-                arr_i = interp_func_i(xi=(P, T_clip, CO, FeH))
+            # leave_out
+            if species_i in self.leave_out:
+                vmr = np.zeros_like(P)
 
-                # hold VMR constant above 6000K, limit of equchem tables
-                # Find the last valid layer below T_max
-                valid_mask = T <= T_max
-                if np.any(valid_mask):
-                    last_valid_idx = np.where(valid_mask)[0][-1]
-                    arr_i[~valid_mask] = arr_i[last_valid_idx]
+            self.VMRs[species_i] = vmr
 
-                if pRT_name_i != 'MMW':
-                    species_i = self.species_info[
-                        self.species_info[self.pRT_key] == pRT_name_i
-                    ].index[0]
-
-                    const_species = self.params.get('const_species', [])
-                    gaussian_species = self.params.get('gaussian_species', [])
-
-                    # 🔥 Gaussian override (highest priority)
-                    if species_i in gaussian_species:
-                        vmr = self.compute_gaussian_VMR(species_i, params)
-                        self.VMRs[species_i] = vmr
-
-                    # 🔥 Constant VMR override
-                    elif species_i in const_species:
-                        log_vmr = params.get(f'log_{species_i}')
-                        if log_vmr is None:
-                            raise ValueError(f'Missing parameter: log_{species_i}')
-                        vmr_const = 10**log_vmr
-                        self.VMRs[species_i] = np.full_like(P, vmr_const)
-
-                    else:
-                        # --- existing equilibrium logic ---
-                        if self.chemistry == 'flexequ' and species_i not in ['13CO','C17O','C18O','H2(18)O']:
-                            vmr = (10**arr_i) * (10**params[f'log_a_{species_i}'])
-                            self.VMRs[species_i] = np.clip(vmr, a_min=None, a_max=0.1)
-                        else:
-                            self.VMRs[species_i] = 10**arr_i
-
-                    # Apply leave_out AFTER override
-                    if species_i in self.leave_out:
-                        self.VMRs[species_i].fill(0)
-                else:
-                    self.MMW = arr_i.copy()  # Mean molecular weight
-            return self.VMRs
-
-        load_interp_tables()
-        self.VMRs = get_VMRs(params)
-        self.mass_fractions = self.VMR_to_MF(self.VMRs)
-
+        # --- quenching (in VMR space!) ---
         if self.chemistry == 'quequchem':
             already_quenched = set()
-            quench_params = [p for p in self.params if p.startswith("log_Pqu_")]
+            quench_params = [p for p in self.params if p.startswith("log_Pqu_") 
+                             and not p.endswith("_err")]
+
             for qparam in quench_params:
                 species_list = qparam.split("log_Pqu_")[1].split("_")
                 Pqu = 10**self.params[qparam]
                 idx = find_nearest(self.pressure, Pqu)
+
                 for sp in species_list:
                     if sp not in already_quenched:
-                        sp_pRT = self.species_info.loc[sp,self.pRT_key]
-                        quenched_fraction = self.mass_fractions[sp_pRT][idx]
-                        self.mass_fractions[sp_pRT][:idx] = quenched_fraction
+                        self.VMRs[sp][:idx] = self.VMRs[sp][idx]
                         already_quenched.add(sp)
+
+        # --- compute MMW from VMRs ---
+        self.MMW = np.zeros(self.n_atm_layers)
+
+        for species_i, vmr_i in self.VMRs.items():
+            mu_i = self.species_info.loc[species_i, 'mass']
+            self.MMW += vmr_i * mu_i
+
+        # --- convert to mass fractions ---
+        self.mass_fractions = {}
+
+        for species_i, vmr_i in self.VMRs.items():
+            mu_i = self.species_info.loc[species_i, 'mass']
+            species_pRT_i = self.species_info.loc[species_i, self.pRT_key]
+            self.mass_fractions[species_pRT_i] = vmr_i * mu_i / self.MMW
+
+        self.mass_fractions['MMW'] = self.MMW
+        self.FeH = params.get('Fe/H')
+        self.CO = params.get('C/O')
 
         return self.mass_fractions
     
@@ -804,7 +817,7 @@ class pRT_spectrum:
                                                                     additional_absorption_opacities_function = self.give_absorption_opacity,
                                                                     eddy_diffusion_coefficients=self.Kzz, # array of eddy diffusion coefficients for each pressure layer (constant)
                                                                     cloud_f_sed=self.cloud_f_sed, # dictionary of f_sed for each cloud species
-                                                                    cloud_particle_radius_distribution_std = self.cloud_particle_radius_distribution_std,
+                                                                    cloud_particle_radius_distribution_std = self.cloud_particle_size_std,
                                                                     cloud_fraction=self.params.get('cloud_fraction', 1.0), # for cloud coverage
                                                                     frequencies_to_wavelengths=True)
                 flux *= u.erg/(u.cm**2*u.s*u.cm)

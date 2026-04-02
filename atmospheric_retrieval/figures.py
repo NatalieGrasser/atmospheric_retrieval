@@ -6,6 +6,7 @@ import numpy as np
 import corner
 import copy
 import matplotlib.pyplot as plt
+import matplotlib
 from matplotlib import pyplot as plt, ticker as mticker
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 from astropy import constants as const
@@ -32,6 +33,9 @@ import glob
 from petitRADTRANS.radtrans import Radtrans
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.backends.backend_pdf import PdfPages
+from petitRADTRANS.plotlib import plot_radtrans_opacities
+from petitRADTRANS.plotlib import plot_opacity_contributions
+
 warnings.filterwarnings("ignore", category=UserWarning) 
 if getpass.getuser() == "grasser": # when runnig from LEM
     path_tables = '/net/lem/data2/regt/fastchem_tables'
@@ -66,11 +70,10 @@ def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
             scale = [flux, err, flux_m]
             flux, err, flux_m = [var*continuum for var in scale]
 
-    wl_unit = r'$\mathrm{\mu}$m'
+    wl_unit = retr_obj.parameters.params['wavelength_unit'].to_string('latex')
     pm_xlim = 0.0 # in um
     s2 = retr_obj.params_dict['s2']
     if retr_obj.instrument=='CRIRES':
-        wl_unit = 'nm'
         pm_xlim = 10 # in nm
         if retr_obj.target.name=='test_ROXs12B':
             s2*=1.5       
@@ -183,13 +186,13 @@ def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
         axins2.plot(wave[parts].flatten(),flux[parts].flatten()-flux_m[parts].flatten(),lw=0.8,c=retr_obj.color)
         axins2.plot([np.min(wave[parts]),np.max(wave[parts])],[0,0],lw=0.8,alpha=1,c='k')
         axins2.set_xlim(x1, x2)
-        axins2.set_xlabel(f'Wavelength [{wl_unit}]',fontsize=fs)
+        axins2.set_xlabel(rf'Wavelength [{wl_unit}]',fontsize=fs)
         axins2.set_ylabel('Res.',fontsize=fs)
         tick_spacing=1
         axins2.xaxis.set_minor_locator(ticker.MultipleLocator(tick_spacing))
         axins2.tick_params(labelsize=fs)
     else:
-        ax[1].set_xlabel(f'Wavelength [{wl_unit}]',fontsize=fs) # if no inset
+        ax[1].set_xlabel(rf'Wavelength [{wl_unit}]',fontsize=fs) # if no inset
 
     plt.subplots_adjust(wspace=0, hspace=0)
     if 'ax' not in kwargs:
@@ -727,7 +730,6 @@ def get_sonora_PT_envelope(temp_range=None,
     else:
         return P_grid, T_min, T_max
 
-
 def plot_pt(retr_obj,fs=12,figsize=5,comp_pt=True,show_cond=False,
             show_contr=True,contr_as_curve=False,leg_fs=12,
             save_jpg=False,temp_lim=None,get_xmin_xmax=False,
@@ -1056,7 +1058,6 @@ def cornerplot(retr_obj,getfig=False,figsize=20,fs=12,plot_label='',alphas=False
     if only_abundances==True: # plot only abundances
         plot_label='_abunds'
         if retr_obj.chemistry in ['freechem','varchem']:
-            #suffix='_0' if retr_obj.chemistry=='varchem' else ''
             abunds=[]
             param_names=[]
             species=retr_obj.species_names
@@ -1239,38 +1240,40 @@ def cornerplot(retr_obj,getfig=False,figsize=20,fs=12,plot_label='',alphas=False
         ax = np.array(fig.axes)
         return fig, ax
 
-def make_all_plots(retr_obj,only_abundances=False,only_params=None,split_corner=True,comp_equ=True):
+def make_all_plots(retr_obj,only_params=None,
+                    split_corner=False,comp_equ=True):
+
+    summary_plot(retr_obj,show_params='all')
+    plot_contribution_per_species(retr_obj)
+
     if retr_obj.instrument=='CRIRES':
         plot_spectrum_split(retr_obj)
         plot_spectrum_inset(retr_obj)
         plot_pt(retr_obj)
-        if ('log_k_rk' in retr_obj.params_dict) or ('T_disk' in retr_obj.params_dict):
-            plot_rk(retr_obj)
-            plot_spectrum_split(retr_obj,plot_veiling=True)
-        if 'cloud_slope' in retr_obj.params_dict:
-            cornerplot(retr_obj,cloud_params=True)
+    if ('log_k_rk' in retr_obj.params_dict) or ('T_disk' in retr_obj.params_dict):
+        plot_rk(retr_obj)
+    if 'cloud_slope' in retr_obj.params_dict:
+        cornerplot(retr_obj,cloud_params=True)
+    if retr_obj.chemistry in ['freechem','varchem','quequchem']:
         comp_equ=True # compare with what equchem abundances would be like
-    elif retr_obj.instrument=='LIFE':
-        summary_plot(retr_obj)
-        cornerplot(retr_obj,only_params=only_params)
+    else:
         comp_equ=False
-        return
-    summary_plot(retr_obj,show_params='all')
-    if retr_obj.chemistry in ['freechem','varchem']:
-        cornerplot(retr_obj,ratios=True) # plot ratios, already in equchem cornerplot by default
-        if split_corner: # split corner plot to avoid massive files
-            cornerplot(retr_obj,only_abundances=True)
-            cornerplot(retr_obj,not_abundances=True)
-        else: # make cornerplot with all parameters, could be huge, avoid this
-            cornerplot(retr_obj,only_params=only_params)
-    elif retr_obj.chemistry in ['equchem','quequchem','flexequ']:
-        comp_equ=False
+    VMR_plot(retr_obj,VMR_species='all',comp_equ=comp_equ) # show all
+   # VMR_plot(retr_obj,comp_equ=comp_equ) # show most abundant (with errors)
+
+    if retr_obj.chemistry in ['freechem','varchem','flexequ']:
+        cornerplot(retr_obj,ratios=True)# plot ratios, already in equchem cornerplot by default
+    
+    if split_corner and retr_obj.chemistry in ['freechem','varchem']: # split corner plot to avoid massive files
+        cornerplot(retr_obj,only_abundances=True)
+        cornerplot(retr_obj,not_abundances=True)
+    elif only_params is not None: # make cornerplot with all parameters, could be huge
         cornerplot(retr_obj,only_params=only_params)
-        if retr_obj.chemistry=='flexequ':
-            plot_scaled_abunds(retr_obj)
-            cornerplot(retr_obj,ratios=True)
-    VMR_plot(retr_obj,VMR_species='all',comp_equ=comp_equ) # show all (without errors)
-    VMR_plot(retr_obj,comp_equ=comp_equ) # show most abundant (with errors)
+    else:
+        cornerplot(retr_obj)
+    
+    if retr_obj.chemistry=='flexequ':
+        plot_scaled_abunds(retr_obj)
     
 def summary_plot(retr_obj,**kwargs):
 
@@ -1739,16 +1742,17 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
         fig.savefig(f'{comparison_dir}/cornerplot_{suffix}{num}.jpg',bbox_inches="tight",dpi=200)
     plt.close()
 
-def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
-                addname=False,plotlegend=False,wH2He=True,show_contr=True,
-                xmin=1e-10,xmax=1e0,save_jpg=False,add_species=None,
-                ymin=None,ymax=None,figsize=(5,3.5),linestyles=[],**kwargs):
+def VMR_plot(retr_obj,fs=10,n=8,VMR_species='all',comp_equ=False,sigma=2,
+                addname=False,plotlegend=False,wH2He=False,show_contr=True,
+                xmin=1e-12,xmax=1e-2,save_jpg=False,add_species=None,
+                ymin=None,ymax=None,figsize=(5.5,3.5),linestyles=[],**kwargs):
 
     prefix = retr_obj.callback_label if retr_obj.callback_label=='live_' else ''
     suffix=''
     output_dir=retr_obj.output_dir
     ymin = np.min(retr_obj.pressure) if ymin==None else ymin
     ymax = np.max(retr_obj.pressure) if ymax==None else ymax
+    xmax=1e0 if wH2He else 1e-2
 
     if 'ax' in kwargs:
         ax=kwargs.get('ax')
@@ -1756,7 +1760,6 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
         fig,ax=plt.subplots(1,1,figsize=figsize,dpi=200)
 
     legend_labels=0
-    #xmin,xmax=1e-10,10**(-2.5)
     chemleg=[] # legend for chemistry
     pressure=retr_obj.model_object.pressure
 
@@ -1766,11 +1769,9 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
         abunds=[]
         species=retr_obj.species_names
         if wH2He and retr_obj.chemistry in ['equchem','quequchem','flexequ']:
-            #xmin,xmax = 1e-10,1e0
             species.extend(s for s in ['H2','He'] if s not in species)
         
         if retr_obj.chemistry in ['freechem','varchem']:
-            #s='_0' if retr_obj.chemistry =='varchem' else ''
             for spec in species:
                 s='_0' if spec in retr_obj.vary_species else ''
                 abunds.append(retr_obj.params_dict[f"log_{spec}{s}"])
@@ -1781,51 +1782,40 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
 
         abunds, species = zip(*sorted(zip(abunds, species)))
         VMR_species=species[-n:][::-1] # get n largest
-        legend_ncol = int(math.ceil(len(VMR_species)/2))
+
     elif VMR_species=='all':
         suffix='_all'
         VMR_species = retr_obj.species_names
         if wH2He and retr_obj.chemistry in ['equchem','quequchem','flexequ']:
-            #xmin,xmax = 1e-10,1e0
             VMR_species.extend(s for s in ['H2','He'] if s not in VMR_species)
-        legend_ncol = int(math.ceil(len(VMR_species)/4))
     else:
         suffix = '_few'
-        legend_ncol = int(math.ceil(len(VMR_species)/4))
-
-    def log_spaced_values(center, num_values=4, log_range=1.0):
-        log_center = np.log10(center)
-        exponents = np.linspace(log_center - log_range / 2, log_center + log_range / 2, num_values)
-        return 10 ** exponents
-
-    def plot_VMRs(retr_obj,ax,ax2,ls=None):
         
-        alpha=1
-        if retr_obj.chemistry=='freechem':  
-            linestyle='dashed' if ls is None else ls
-            chemleg.append(Line2D([0], [0], marker='o',color='k',markerfacecolor='k',linewidth=2,alpha=alpha,label='Free'))
-        elif retr_obj.chemistry in ['equchem','flexequ']:
-            linestyle='solid' if ls is None else ls
-            alpha=0.8
-            chemleg.append(Line2D([0], [0], color='k',linestyle=linestyle,linewidth=2,alpha=alpha,label='Equ'))
-        elif retr_obj.chemistry in ['varchem']:
-            linestyle='dashed' if ls is None else ls
-            alpha=0.8
-            chemleg.append(Line2D([0], [0], color='k',linestyle=linestyle,linewidth=2,alpha=alpha,label='Var'))
-        elif retr_obj.chemistry=='quequchem':
-            linestyle='solid'
-            alpha=0.8
-            chemleg.append(Line2D([0], [0], color='k',linestyle=linestyle,linewidth=2,alpha=alpha,label='Quench'))
+    additional = 2 if wH2He else 0
+    legend_ncol = (len(retr_obj.species_names) + 1 + additional) // 2 # max 2 in column
 
-        contribution_plot=retr_obj.summed_contribution/np.max(retr_obj.summed_contribution)*(xmax-xmin)+xmin
-        global vmr_emcont
-        vmr_emcont, = ax2.plot(contribution_plot,pressure,lw=1,alpha=0.5,color=retr_obj.color,linestyle=linestyle)
-        ax2.set_xlim(np.min(contribution_plot),np.max(contribution_plot))
-        ax2.set_ylim(ymin,ymax)
-        contr_max=pressure[np.where(retr_obj.summed_contribution==np.max(retr_obj.summed_contribution))[0]]
-        ax2.set_yscale('log')
-        offset = log_spaced_values(contr_max) # slight vertical offset for overlapping species
-        off_i=0
+    def plot_VMRs(retr_obj,ax,ax2,ls=None,main=True):
+        
+        if main: # main retrieval
+            alpha=1 if ls is None else ls
+            linestyle='solid'
+        else: # comparing to smth else
+            alpha= 0.4
+            linestyle='dashed' if ls is None else ls
+
+        label_map = {'freechem': 'Free','equchem': 'Equ','flexequ': 'Flex',
+                            'varchem': 'Var','quequchem': 'Quench'}
+        chemleg.append(Line2D([0], [0], color='k',linestyle=linestyle,linewidth=2,
+                        alpha=alpha,label=label_map.get(retr_obj.chemistry)))
+
+        if main:
+            contribution_plot=retr_obj.summed_contribution/np.max(retr_obj.summed_contribution)*(xmax-xmin)+xmin
+            global vmr_emcont
+            vmr_emcont, = ax2.plot(contribution_plot,pressure,lw=1,alpha=0.5,color=retr_obj.color,linestyle=linestyle)
+            ax2.set_xlim(np.min(contribution_plot),np.max(contribution_plot))
+            ax2.set_ylim(ymin,ymax)
+            contr_max=pressure[np.where(retr_obj.summed_contribution==np.max(retr_obj.summed_contribution))[0]]
+            ax2.set_yscale('log')
 
         for species in VMR_species:
             color=retr_obj.species_info.loc[species,'color']
@@ -1851,25 +1841,17 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
                     if suffix!='_all' and species not in ['H2','He']: # only show errors when not showing all species, or will be cluttered
                         ax.fill_betweenx(pressure,sm,sp,color=color,alpha=0.1) # 95% confidence interval
                 else: # plot only as point to avoid cluttering
-                    if (retr_obj.target.name=='2M0355' and species in ['HF','NH3','CH4','HCN']) or (retr_obj.target.name=='2M1425' and species in ['NH3','HF','H2S','HCN']):
-                        ax.scatter(VMR,offset[off_i], color=color,s=13)
-                        ax.plot([sm,sp],[offset[off_i],offset[off_i]], color=color,lw=1.5)
-                        off_i+=1
-                    else:
-                        ax.scatter(VMR,contr_max, color=color,s=13)
-                        ax.plot([sm,sp],[contr_max,contr_max], color=color,lw=1.5)
+                    ax.scatter(VMR,contr_max, color=color,s=13)
+                    ax.plot([sm,sp],[contr_max,contr_max], color=color,lw=1.5)
             elif (retr_obj.chemistry in ['equchem','quequchem','flexequ','varchem']) or (retr_obj.chemistry=='freechem' and retr_obj.use_partial_pressure==True):
                 label=label if legend_labels==0 else '_nolegend_'
-                if comp_equ==False: # compare with actual retrievals
+                if main:
                     p=np.percentile(retr_obj.VMR_dict[species], [0.2,2.3,15.9,50.0,84.1,97.7,99.8], axis=0)
                     median = p[3]
                     sm = p[3 - sigma]
                     sp = p[3 + sigma]
                     ax.plot(median,pressure,label=label,alpha=alpha,linestyle=linestyle,c=color)
-                    if retr_obj.chemistry!='quequchem':
-                        ax.fill_betweenx(pressure,sm,sp,color=color,alpha=0.1) 
-                    else:
-                        ax.fill_betweenx(pressure,sm,sp,color=color,alpha=0.05,hatch='x')
+                    ax.fill_betweenx(pressure,sm,sp,color=color,alpha=0.1) 
                 else: # compare with computed equchem based on same params
                     ax.plot(retr_obj.model_object.VMR_dict[species],pressure,label=label,alpha=alpha,linestyle=linestyle,c=color)
 
@@ -1885,19 +1867,23 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
     plot_VMRs(retr_obj,ax=ax,ax2=ax2,ls=ls)
     legend_labels=1 if 'retr_obj2' not in kwargs else 0 # only make legend labels once 
 
-    # compare freechem VMRs to equilibrium chemistry with other retrieved params remaining equal
+    # compare VMRs to equilibrium chemistry with other retrieved params remaining equal
     if comp_equ==True:
         #suffix+='_compequ'
         from retrieval import Retrieval
         from parameters import Parameters
         parameters_equ = retr_obj.params_dict
-        parameters_equ.update({'C/O': retr_obj.params_dict['C/O'],
-                        'Fe/H': retr_obj.params_dict['C/H']})
-        ratios_free,ratios_equ = get_ratios(retr_obj,equ_too=True)
-        for r,e in zip(ratios_free,ratios_equ):
-            parameters_equ.update({e: retr_obj.params_dict[r]})
+        if retr_obj.chemistry!='quequchem':
+            parameters_equ.update({'C/O': retr_obj.params_dict['C/O'], 
+                                    'Fe/H': retr_obj.params_dict['C/H'],
+                                    'const_species': [],
+                                    'gaussian_species': []})
+            ratios_free,ratios_equ = get_ratios(retr_obj,equ_too=True)
+            for r,e in zip(ratios_free,ratios_equ):
+                parameters_equ.update({e: retr_obj.params_dict[r]})
         parameters_equ = Parameters({}, parameters_equ)
-        parameters_equ.param_priors['log_l']=[-3,0]
+        if retr_obj.parameters.params['use_GP']:
+            parameters_equ.param_priors['log_l']=[-3,0]
 
         retr_equ = Retrieval(target=retr_obj.target,parameters=parameters_equ,
                                   Nlive=retr_obj.Nlive,
@@ -1907,7 +1893,7 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
         retr_equ.model_object=pRT_spectrum(retr_equ,contribution=True)
         retr_equ.model_flux0=retr_equ.model_object.make_spectrum() # to get contr_em
         retr_equ.summed_contribution= retr_equ.model_object.summed_contribution # average over all orders
-        plot_VMRs(retr_equ,ax=ax,ax2=ax2)
+        plot_VMRs(retr_equ,ax=ax,ax2=ax2,main=False)
 
         # folder created when initializing retrieval object, delete afterwards
         if os.path.exists(retr_equ.output_dir) and not os.listdir(retr_equ.output_dir):  # Check if folder exists and is empty
@@ -1961,14 +1947,11 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
                 else:
                     ax.plot(tab[species],pres,alpha=1,linestyle='solid',c=color)
         chemleg.append(Line2D([0], [0], color='k',linestyle='solid',linewidth=2,alpha=0.7,label='Input'))
-                #chemleg.append(Line2D([0], [0], color=retr_obj.color, linewidth=2,alpha=0.3, linestyle='dotted',label='Retr contr'))
         chemleg.append(Line2D([0], [0], color=retr_obj.color, linewidth=2,alpha=0.3, linestyle='dashdot',label='Retr $P_\mathrm{max}$'))
-        #chemleg.append(Line2D([0], [0], color='blueviolet', linewidth=2,alpha=0.3, linestyle='dotted',label='Input contr'))
         chemleg.append(Line2D([0], [0], color=retr_obj.target.in_col, linewidth=2,alpha=0.3, linestyle='dashdot',label='Input $P_\mathrm{max}$'))
 
     if comp_equ==True or 'retr_obj2' in kwargs or retr_obj.target.name in ['Sorg1X','Sorg20X']:
         leg2=ax.legend(handles=chemleg,fontsize=fs*0.8,loc='upper left')
-        ax.add_artist(leg2)
 
     if addname==True:
         from matplotlib import colors
@@ -1995,21 +1978,22 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species=None,comp_equ=False,sigma=2,
             line_props.append((handle.get_color(),label))
         return line_props
     else:
-        #leg_fs = fs*0.8 if '_all' not in suffix else fs*0.6
-        leg_fs = fs*0.7
-        leg=ax.legend(fontsize=leg_fs,ncol=legend_ncol,loc='upper right')
+        leg_fs = fs*0.85
+        leg=ax.legend(fontsize=leg_fs,ncol=legend_ncol,loc='upper center',
+                        bbox_to_anchor=(0.5, 1.22),frameon=False)
         for lh in leg.legend_handles:
             lh.set_alpha(1)
         for line in leg.get_lines():
             line.set_linestyle('-')
-        ax.add_artist(leg)
+        if comp_equ==True or 'retr_obj2' in kwargs or retr_obj.target.name in ['Sorg1X','Sorg20X']:
+            ax.add_artist(leg2)
         if 'ax' not in kwargs:
             if add_species!=None:
                 suffix += f'_{add_species}'
             fig.tight_layout()
-            fig.savefig(f'{output_dir}/{prefix}VMRs{suffix}.pdf')
+            fig.savefig(f'{output_dir}/{prefix}VMRs{suffix}.pdf', bbox_inches='tight')
             if save_jpg:
-                fig.savefig(f'{output_dir}/{prefix}VMRs{suffix}.jpg')
+                fig.savefig(f'{output_dir}/{prefix}VMRs{suffix}.jpg', bbox_inches='tight')
             plt.close()
 
 def CCF_plot_all(retr_obj,ccf_species,noiserange=100,show_ACF=False,axes=None,
@@ -2372,18 +2356,28 @@ def plot_scaled_abunds(retr_obj): # plot abundances of scaled equchem
     plt.close()
     return
 
-def pRT_to_PSG_units(flux):
-    flux_new = flux*1e-7*1e4*1e-4/np.pi
-    return flux_new
+def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,add_data=True,
+                                    wH2He = False, show_continuum=False,**kwargs):
 
-def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,**kwargs):
-    atmosphere = retr_obj.radtrans_objects
+    radtrans = retr_obj.radtrans_objects[0]
     species_names = retr_obj.species_names
     species_info = retr_obj.species_info
     n_atm_layers = retr_obj.n_atm_layers
     #wl_um = retr_obj.data_wave.flatten()
     temperature = retr_obj.model_object.temperature
     gravity = 10**retr_obj.params_dict['log_g']
+
+    mo = retr_obj.model_object
+    prm = retr_obj.parameters.params
+    common_params = {'temperatures':temperature,
+                    'mean_molar_masses': mo.MMW,
+                    'reference_gravity': gravity,
+                    'return_contribution':False,
+                    'additional_absorption_opacities_function': mo.give_absorption_opacity,
+                    'eddy_diffusion_coefficients':mo.Kzz, # array of eddy diffusion coefficients for each pressure layer (constant)
+                    'cloud_f_sed':mo.cloud_f_sed, # dictionary of f_sed for each cloud species
+                    'cloud_particle_radius_distribution_std': mo.cloud_particle_size_std,
+                    'cloud_fraction':prm.get('cloud_fraction', 1.0)}
 
     if retr_obj.chemistry=='freechem':
         VMRs = {'He':0.15*np.ones(n_atm_layers)}
@@ -2401,7 +2395,7 @@ def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,**kwargs):
         VMRs = VMR_med
 
     def VMR_to_MF(VMR_dict):
-        MMW = np.zeros(n_atm_layers) #0.
+        MMW = np.zeros(n_atm_layers)
         for species_i, VMR_i in VMR_dict.items():
             mass_i = species_info.loc[species_i,'mass']
             MMW += mass_i * VMR_i
@@ -2415,21 +2409,28 @@ def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,**kwargs):
     
     mf, mmw = VMR_to_MF(VMRs)
     bb_alpha = 0.5
-    sorg_alpha=1
+    tot_alpha=1
 
-    def contribution_by_species_single(radtrans,
-                                temperatures, mass_fractions,
-                                gravity, MMW):
+    def contribution_by_species_single(radtrans, mass_fractions):
 
         # Full spectrum (for reference)
-        radtrans.calc_flux(temperatures, mass_fractions, gravity, MMW)
-        wl = const.c.to(u.km/u.s).value / radtrans.freq / 1e-5  # cm
-        wl_um = wl/1e-4
-        base_spec = radtrans.flux * const.c.cgs.value / (wl**2)
-        #base_spec = pRT_to_PSG_units(base_spec)
-        #_, base_spec = pRT_to_photon_flux(radtrans)
-        base_spec = pRT_to_PSG_units(base_spec)
+        if prm['emission_or_transmission']=='emission':
+            wl_cm, flux, _ = radtrans.calculate_flux(mass_fractions=mass_fractions,
+                                                    frequencies_to_wavelengths=True,
+                                                    **common_params)
+            flux *= u.erg/(u.cm**2*u.s*u.cm)
 
+        elif prm['emission_or_transmission']=='transmission':
+            R_p = ensure_quantity(prm['R_p'], u.R_jup).to(u.cm).value
+            wl_cm, transit_radii_cm, _ = radtrans.calculate_transit_radii(mass_fractions=mass_fractions,
+                                                            planet_radius= R_p,
+                                                            reference_pressure=prm['ref_pressure'],
+                                                            **common_params)
+            
+            R_s = ensure_quantity(prm['R_s'], u.R_sun).to(u.cm).value
+            flux = (transit_radii_cm / R_s)**2 * 100 # in  %
+
+        base_spec = flux
         contributions = {}
 
         for sp in mass_fractions.keys():
@@ -2441,38 +2442,92 @@ def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,**kwargs):
                 else:
                     mf[k] = 0.0 * mass_fractions[k]
 
-            radtrans.calc_flux(temperatures, mf, gravity, MMW)
-            spec_sp = radtrans.flux * const.c.cgs.value / (wl**2)
-            #_, spec_sp = pRT_to_photon_flux(radtrans)
-            spec_sp = pRT_to_PSG_units(spec_sp)
-            contributions[sp] = spec_sp
+            if prm['emission_or_transmission']=='emission':
+                wl_cm, flux, _ = radtrans.calculate_flux(mass_fractions=mf,
+                                                        frequencies_to_wavelengths=True,
+                                                        **common_params)
+                flux *= u.erg/(u.cm**2*u.s*u.cm)
 
+            elif prm['emission_or_transmission']=='transmission':
+                R_p = ensure_quantity(prm['R_p'], u.R_jup).to(u.cm).value
+                wl_cm, transit_radii_cm, _ = radtrans.calculate_transit_radii(mass_fractions=mf,
+                                                                planet_radius= R_p,
+                                                                reference_pressure=prm['ref_pressure'],
+                                                                **common_params)
+                
+                R_s = ensure_quantity(prm['R_s'], u.R_sun).to(u.cm).value
+                flux = (transit_radii_cm / R_s)**2 * 100 # in  %
+
+            if prm['flux_unit'] is not None:
+                if isinstance(prm['flux_unit'], u.Quantity):
+                    flux = flux.to(prm['flux_unit']).value
+                elif prm['flux_unit']=='photons':
+                    flux = mo.pRT_to_photon_flux(radtrans)
+            contributions[sp] = flux
+
+        wl_cm *= u.cm
+        wl = wl_cm.to(prm['wavelength_unit']).value
+
+        # only continuum flux without any species
         for sp in mass_fractions.keys():
             mf[sp] = 0.0 * mass_fractions[sp]
-        radtrans.calc_flux(temperatures, mf, gravity, MMW)
-        blackbody_flux = radtrans.flux * const.c.cgs.value / (wl**2)
-        blackbody_flux = pRT_to_PSG_units(blackbody_flux)
+        if prm['emission_or_transmission']=='emission':
+            wl_cm, flux, _ = radtrans.calculate_flux(mass_fractions=mf,
+                                                    frequencies_to_wavelengths=True,
+                                                    **common_params)
+            flux *= u.erg/(u.cm**2*u.s*u.cm)
 
-        return wl_um, base_spec, contributions, blackbody_flux
+        elif prm['emission_or_transmission']=='transmission':
+            R_p = ensure_quantity(prm['R_p'], u.R_jup).to(u.cm).value
+            wl_cm, transit_radii_cm, _ = radtrans.calculate_transit_radii(mass_fractions=mf,
+                                                            planet_radius= R_p,
+                                                            reference_pressure=prm['ref_pressure'],
+                                                            **common_params)
+            
+            R_s = ensure_quantity(prm['R_s'], u.R_sun).to(u.cm).value
+            flux = (transit_radii_cm / R_s)**2 * 100 # in  %
+
+        if prm['flux_unit'] is not None:
+            if isinstance(prm['flux_unit'], u.Quantity):
+                flux = flux.to(prm['flux_unit']).value
+            elif prm['flux_unit']=='photons':
+                flux = mo.pRT_to_photon_flux(radtrans)
+        continuum_flux = flux
+
+        return wl, base_spec, contributions, continuum_flux
     
-    wl_um, tot, contribs, bb = contribution_by_species_single(atmosphere, temperature, mf, gravity, mmw)
+    wl, tot, contribs, bb = contribution_by_species_single(radtrans, mf)
 
     if 'ax' in kwargs:
         ax=kwargs.get('ax')
     else:
-        fig,ax =plt.subplots(1,1,figsize=(5,2.5),dpi=200)
+        fig,ax =plt.subplots(1,1,figsize=(5.5,3.5),dpi=200)
 
-    ax.set_ylabel('W/sr/m$^2$/μm',fontsize=fs)
-    ax.set_xlabel('Wavelength (μm)',fontsize=fs)
-    ax.set_xlim(np.min(wl_um),np.max(wl_um))
+    ax.set_ylabel(retr_obj.ylabel,fontsize=fs)
+    wl_unit = prm['wavelength_unit'].to_string('latex')  # astropy quantity
+    ax.set_xlabel(rf'Wavelength [{wl_unit}]', fontsize=fs)
+    ax.set_xlim(np.min(wl),np.max(wl))
 
-    leg_y = 1.3
-    ncol=5
+    if add_data:
+        lam = retr_obj.data_wave.flatten()
+        fl = retr_obj.data_flux.flatten()
+        err = retr_obj.data_err.flatten()
+        data_size=1.3
+        elw=data_size/6
+        data_alpha = 0.4
+        ax.errorbar(lam,fl,yerr=err,fmt='o',markersize=data_size,elinewidth=elw,
+                    markerfacecolor=retr_obj.color,markeredgecolor='black',
+                    markeredgewidth=elw,alpha=data_alpha)
+
+    dp_max, dp_min = [], []
+    leg_y = 1.25
+    additional = 2 if wH2He else 0
+    ncol= (len(species_names) + 1 + additional) // 2 # max 2 in column
     def plot_contribs(tot,contribs,bb,axi):
         lines = []
         for sp, dp in contribs.items():
-            ##if sp in ['H2','He']:
-                #continue
+            if sp in ['H2','He'] and wH2He==False:
+                continue
             # find matching label in species_names via pRT_name column
             match = species_info[species_info[retr_obj.pRT_key] == sp]
             if match.empty:
@@ -2484,28 +2539,196 @@ def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,**kwargs):
             lines.append(Line2D([0],[0],color=c,
                         linewidth=2,label=mathtext))
 
-            axi.plot(wl_um, dp, label=label, c=c,lw=0.8)
+            axi.plot(wl, dp, label=label, c=c,lw=0.8)
+            dp_max.append(np.nanmax(dp))
+            dp_min.append(np.nanmin(dp))
 
-        axi.plot(wl_um, tot, c='k',alpha=sorg_alpha,lw=0.8)
-        axi.plot(wl_um, bb, c='k',linestyle='dotted',lw=3,alpha=bb_alpha)
+        axi.plot(wl, tot, c='k',alpha=tot_alpha,lw=0.8)
+        if show_continuum:
+            axi.plot(wl, bb, c='k',linestyle='dotted',lw=3,alpha=bb_alpha)
 
         return lines
-    
+
     lines = plot_contribs(tot,contribs,bb,ax)
-    handles1 = [Line2D([0], [0], color='k',linewidth=2,alpha=sorg_alpha,label=retr_obj.target.sorg_mathtext),
-                Line2D([0], [0], color='k',linewidth=3,linestyle='dotted',alpha=bb_alpha,label=r'$F_{\lambda}^{\mathrm{cont}}$')
-                ]
+    handles1 = [Line2D([0], [0], color='k',linewidth=2,alpha=tot_alpha,label='Total')]
+
+    if add_data:
+        handles1.append(Line2D([0], [0], marker='o', linestyle='none', markersize=4,
+                    markerfacecolor=retr_obj.color, markeredgecolor='black', markeredgewidth=4/6,
+                    color='k',alpha=data_alpha,label='Data'))
+    
+    if show_continuum:
+        handles1.append(Line2D([0], [0], color='k',linewidth=3,linestyle='dotted',alpha=bb_alpha,
+                       label='Continuum'))#r'$F_{\lambda}^{\mathrm{cont}}$')
     leg1 = ax.legend(handles=handles1, loc='upper left',
                     handlelength=1.7, frameon=False,fontsize=fs*0.9)
     if plot_legend:
         species_leg = ax.legend(handles=lines,bbox_to_anchor=(0.5, leg_y),ncol=ncol,
-                                loc='upper center',frameon=False,fontsize=9)
+                                loc='upper center',frameon=False,fontsize=fs*0.9)
         ax.add_artist(leg1)
 
     if 'ax' not in kwargs:
         fig.tight_layout()
-        fig.savefig(f'{retr_obj.output_dir}/Contribution_species.pdf')
+        name = 'contribution_species' if retr_obj.callback_label=='final_' else f'{retr_obj.callback_label}contribution_species'
+        fig.savefig(f'{retr_obj.output_dir}/{name}.pdf', bbox_inches='tight')
         plt.close()
     else:
         return
+
+def plot_opacities(retr_obj,species=None,
+                        wave_range=[],lw=0.7,top_n=None,alph=0.6,
+                        include_total=False,include_cont_species=False,
+                        ax=None,fill_below=False):
+
+    mode = retr_obj.parameters.params['emission_or_transmission']
+    common_params = {'mode': mode,
+                    'temperatures': retr_obj.model_object.temperature,
+                    'mass_fractions': retr_obj.model_object.mass_fractions,
+                    'mean_molar_masses': retr_obj.model_object.MMW,
+                    'reference_gravity': retr_obj.model_object.gravity}
+
+    if mode=='transmission':
+        common_params['planet_radius'] = (retr_obj.params_dict['R_p']*u.R_jup).to(u.cm).value
+        common_params['reference_pressure'] = retr_obj.parameters.params['ref_pressure']
+
+    if len(retr_obj.radtrans_objects)==1:
+        radtrans = retr_obj.radtrans_objects[0]
+    # if in sections, calc anew, for it to be continiuous in this plot
+    else:
+        radtrans = Radtrans(pressures=retr_obj.pressure,
+                            line_species=retr_obj.line_species,
+                            rayleigh_species= ['H2', 'He'],
+                            gas_continuum_contributors=retr_obj.CIA,
+                            wavelength_boundaries=retr_obj.wlen_range_um, # microns
+                            cloud_species=retr_obj.cloud_species_pRT,
+                            line_opacity_mode=retr_obj.parameters.params['opa_mode'],
+                            line_by_line_opacity_sampling=retr_obj.lbl_opacity_sampling)
+        
+    opacity_contributions = radtrans.calculate_contribution_spectra(**common_params)
+    species_contributions = {}
+    # Extract wavelength grid (same for all)
+    lam, total_op, _ = opacity_contributions['Total']
+
+    for key in ['line_species', 'rayleigh_species', 'gas_continuum_contributors']:
+        if key in opacity_contributions:
+            for spec, (lam, spec_op, contr) in opacity_contributions[key].items():
+                spec_op = spec_op - total_op
+                opacity_contributions[key][spec] = (lam, spec_op, contr)
+
+    # Line species
+    for spec, (spec_lam, spec_op, _) in opacity_contributions['line_species'].items():
+        # sanity check: lam should match spec_lam; if not, interpolate
+        if not np.allclose(spec_lam, lam):
+            spec_op = np.interp(lam, spec_lam, spec_op)
+        species_contributions[spec] = np.max(spec_op) #np.trapz(spec_op, lam)
+
+    if species is None:
+        if top_n is not None: # plot n most relevant species
+            species = sorted(species_contributions, key=species_contributions.get, reverse=True)[:top_n]
+        else: # plot all
+            species = retr_obj.species_names
+
+    if ax is None:
+        return_ax=False
+    else:
+        return_ax = True
+
+    include_contributions = []
+    if include_total:
+        include_contributions.append('Total')
+    if 'H2' in species and 'He' in species and include_cont_species:
+        include_contributions.extend(['H2 (Rayleigh)', 'He (Rayleigh)', 'H2--H2','H2--He'])
+    for species_i in species:
+        include_contributions.append(retr_obj.species_info.loc[species_i,retr_obj.pRT_key])
+
+    line_species_colors = {}
+    rayleigh_species_colors = {}
+    mathtext_labels = []
+    for spec in species:
+        include_contributions.append(spec)
+        if spec in ['H2','He']:
+            rayleigh_species_colors[spec] = retr_obj.species_info.loc[spec,'color']
+        else:
+            prt_name = retr_obj.species_info.loc[spec,retr_obj.pRT_key]
+            mathtext_labels.append(retr_obj.species_info.loc[spec,'mathtext_name'])
+            line_species_colors[prt_name] = retr_obj.species_info.loc[spec,'color']
     
+    _ = plot_opacity_contributions(
+            radtrans,
+            include=include_contributions,
+            colors={'Total': 'k',
+                'line_species': line_species_colors,
+                'rayleigh_species': rayleigh_species_colors},
+            line_styles={'Total': ':',
+                'line_species': '-',
+                'rayleigh_species': '--'},
+            opacity_contributions=opacity_contributions,
+            fill_below=fill_below,
+            show_legend=False,
+            ax=ax,
+            #y_axis_scale='log',
+            **common_params)
+    
+    fig = plt.gcf()
+    if return_ax==False:
+        ax = fig.axes[0]
+
+    for line in ax.get_lines():
+        line.set_linewidth(lw)
+        line.set_alpha(alph)
+
+    for a in fig.axes:
+        if a.legend_ is not None:
+            a.legend_.remove()
+    for leg in fig.get_children():
+        if isinstance(leg, matplotlib.legend.Legend):
+            leg.remove()
+
+    if return_ax==False:
+        fig.set_size_inches(5.5, 4)
+        handles, labels = ax.get_legend_handles_labels()
+        ncols = (len(species) + 1) // 2 # max 2 in column
+        leg = ax.legend(handles, mathtext_labels, ncol=ncols, loc="upper center",
+                        bbox_to_anchor=(0.5, 1.4),fontsize=10)
+        for legline in leg.get_lines():
+            legline.set_linewidth(2)
+            legline.set_alpha(1.0)
+        leg.get_frame().set_linewidth(0.0)
+    
+    for line in ax.get_lines():
+
+        # x data in meters -> to wavelength unit
+        wl_unit = retr_obj.parameters.params['wavelength_unit']
+        x = line.get_xdata()*u.m
+        line.set_xdata(x.to(wl_unit).value)
+
+        #if mode=='transmission':
+            # y data in transit radii
+            #Rstar_m = ensure_quantity(retr_obj.parameters.params['R_s'], u.R_sun).to(u.m).value
+            #Rp_m = line.get_ydata()  # already in meters
+            #depth = 100.0 * (Rp_m / Rstar_m)**2
+            #line.set_ydata(depth)
+            # need the baseline Rp (total!)
+            #Rp_total = total_op  # in meters
+
+            #for line in ax.get_lines():
+            #    dRp = line.get_ydata()  # this is ΔRp
+            #    delta_depth = 2 * Rp_total * dRp / (Rstar_m**2) * 100
+            #    line.set_ydata(delta_depth)
+
+    if return_ax==False:
+        wl_unit = wl_unit.to_string('latex')  # astropy quantity
+        ax.set_xlabel(rf'Wavelength [{wl_unit}]')
+        if mode=='transmission':
+            ax.set_ylabel("Transit depth [%]")
+
+    if wave_range!=[]:
+        ax.set_xlim(wave_range[0],wave_range[1])
+    else:
+        ax.set_xlim(np.nanmin(retr_obj.data_wave), np.nanmax(retr_obj.data_wave))
+
+    if return_ax==False: 
+        fig.tight_layout()  
+        name = 'opacity_contributions' if retr_obj.callback_label=='final_' else f'{retr_obj.callback_label}opacity_contributions'
+        plt.savefig(f'{retr_obj.output_dir}/{name}.pdf',dpi=200)
+        plt.close()
