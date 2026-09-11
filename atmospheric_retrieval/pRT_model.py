@@ -13,7 +13,6 @@ import gc
 from utils import *
 import warnings
 import re
-from utils import *
 from scipy.linalg import LinAlgWarning
 from scipy.integrate import simps
 #from scipy.constants import sigma, h, c, k as sc.sigma, sc.h, sc.c, sc.k
@@ -25,8 +24,7 @@ warnings.filterwarnings(action='ignore', category=LinAlgWarning) # occasional
 import getpass
 if getpass.getuser() == "grasser": # when runnig from LEM
     import matplotlib
-    matplotlib.use('Agg') # disable interactive plotting
-    path_tables = '/net/lem/data2/regt/fastchem_tables'
+    path_tables = '/net/lem/data1/grasser/fastchem_tables'
 elif getpass.getuser() == "natalie": # when testing from my laptop
     os.environ['pRT_input_data_path'] = "/home/natalie/.local/lib/python3.8/site-packages/petitRADTRANS/input_data_std/input_data"
     path_tables = '/home/natalie/fastchem_tables'
@@ -55,7 +53,8 @@ class pRT_spectrum:
         inherit_attributes = ['data_wave','instrument','species_pRT','name','pRT_key',
                               'chemistry','radtrans_objects','n_atm_layers','species_info',
                               'pressure','PT_type','cloud_mode','spectral_resolution',
-                              'mask_isfinite','data_flux','use_partial_pressure','species_names']
+                              'mask_isfinite','data_flux','use_partial_pressure',
+                              'species_names','offset_params','atm_segments','n_parts']
 
         for attr in inherit_attributes:  # list of attributes to pass down
             setattr(self, attr, getattr(retr_obj, attr, None))
@@ -134,7 +133,8 @@ class pRT_spectrum:
             self.species_hill = retr_obj.species_hill
             self.mass_fractions = self.equ_chemistry(self.species_pRT,self.params)
             # update mass_fractions with isotopolog ratios
-            if any(key in self.params for key in ['13CO','C17O','C18O','H2(18)O',
+            if any(key in self.params for key in ['13CO','C17O','C18O','H2(18)O','13CH4',
+                                                  'log_12CH4_13CH4_ratio'
                                                   'log_12CO_13CO_ratio','log_C16O_C18O_ratio',
                                                   'log_H216O_H218O_ratio','log_C16O_C17O_ratio']):
                 self.mass_fractions = self.get_isotope_mass_fractions(self.species_names,self.species_pRT,
@@ -212,11 +212,6 @@ class pRT_spectrum:
             Updated mass fractions including isotopologues.
         """
 
-        # Convert ratios → isotope fractions
-        def ratio_to_fraction(log_ratio):
-            R = 10**log_ratio
-            return 1.0 / (1.0 + R)
-
         ratios = {}
 
         if any('13C-16O' in s for s in species_pRT):
@@ -234,6 +229,10 @@ class pRT_spectrum:
         if any('H2-18O' in s for s in species_pRT):
             R = 10**params.get('log_H216O_H218O_ratio', 15)
             ratios['H2O18'] = 1.0 / (1.0 + R)
+
+        if any('H2-18O' in s for s in species_pRT):
+            R = 10**params.get('log_12CH4_13CH4_ratio', 15)
+            ratios['13CH4'] = 1.0 / (1.0 + R)
 
         # Identify base species per molecule
         base_map = {}
@@ -281,6 +280,15 @@ class pRT_spectrum:
                     mass_fractions[species_pRT_i] = f18 * mass_fractions[main]
                 else:
                     mass_fractions[species_pRT_i] = (1.0 - f18) * mass_fractions[main]
+
+            elif 'C-1H4' in species_pRT_i:
+            
+                main = base_map['CH4']
+                f13 = ratios.get('13CH4', 0.0)
+                if '13' in species_pRT_i:
+                    mass_fractions[species_pRT_i] = f13 * mass_fractions[main]
+                else:
+                    mass_fractions[species_pRT_i] = (1.0 - f13) * mass_fractions[main]
 
         return mass_fractions
     
@@ -792,8 +800,7 @@ class pRT_spectrum:
         spectrum_parts=[]
         waves_parts=[]
         summed_contributions =[]
-        data_shape = self.data_wave.shape
-        self.model_continuum = np.ones(self.data_wave.shape)
+        self.model_continuum = []
         interp_onto_wave = self.data_wave
 
         if self.instrument=='CRIRES':
@@ -803,7 +810,12 @@ class pRT_spectrum:
         if isinstance(self.radtrans_objects, list)==False:
             self.radtrans_objects = [self.radtrans_objects]
 
-        for part, radtrans in enumerate(self.radtrans_objects):
+        for part in range(self.n_parts):
+
+            if self.atm_segments != self.n_parts:
+                radtrans = self.radtrans_objects[0]
+            else: 
+                radtrans = self.radtrans_objects[part]
 
             if self.cloud_mode == 'gray': # Gray cloud opacity
                 self.give_absorption_opacity= self.gray_cloud_opacity 
@@ -843,8 +855,11 @@ class pRT_spectrum:
             wl_cm *= u.cm
             wl = wl_cm.to(self.params['wavelength_unit']).value
             if self.params['flux_unit'] is not None:
-                if isinstance(self.params['flux_unit'], u.Quantity):
+                if isinstance(self.params['flux_unit'], u.CompositeUnit):
                     flux = flux.to(self.params['flux_unit']).value
+                    # scale flux to distance
+                    Rp = self.params['R_p']*u.R_jup
+                    flux = (flux * (Rp.to(u.m) / self.params['distance'].to(u.m)).value ** 2)
                 elif self.params['flux_unit']=='photons':
                     flux = self.pRT_to_photon_flux(radtrans)
 
@@ -859,6 +874,12 @@ class pRT_spectrum:
                 self.summed_contribution = np.nansum(atm_contr,axis=1) # sum over all wavelengths
                 summed_contributions.append(self.summed_contribution)
 
+            # shift up or down if offset retrieved for different segments (relative to first segment)
+            if self.offset_params!=[]:
+                if part!=0: # relative to first segment, so dont shift first one
+                    offset_i = self.params[self.offset_params[part-1]]
+                    flux += offset_i
+
             # RV + barycentric velocity shifting
             if 'rv' in self.params:
                 wl_shifted = wl * (1.0 + (self.params['rv'] - self.vbary) / const.c.to('km/s').value)
@@ -871,7 +892,7 @@ class pRT_spectrum:
                 flux = fastRotBroad(waves_even,flux,self.params['epsilon_limb'],self.params['vsini'])
                 wl = waves_even  # update wavelength grid
 
-            flux = self.instrumental_broadening(wl, flux, self.spectral_resolution)
+            flux = self.instrumental_broadening(wl, flux, self.spectral_resolution[part])
 
             # Interpolate/rebin onto the data's wavelength grid
             # don't when making spectrum for cross-corr, or wavelength padding will be cut off
@@ -898,8 +919,11 @@ class pRT_spectrum:
                     spectrum_parts[order] = fft_remove_continuum(spectrum_parts[order],lower_cutoff=13*fac) # 3 dets+overhead
             return spectrum_parts, waves_parts
         else:
-            spectrum_parts=np.array(spectrum_parts)
-            spectrum_parts = spectrum_parts.reshape(data_shape)
+
+            if self.instrument=='CRIRES+': # homogeneous, can make into array
+                data_shape = self.data_wave.shape
+                spectrum_parts=np.array(spectrum_parts)
+                spectrum_parts = spectrum_parts.reshape(data_shape)
                 
             if self.params['remove_continuum']:
                 for i,part in enumerate(spectrum_parts):
@@ -912,7 +936,7 @@ class pRT_spectrum:
                     spectrum_parts[i][~self.mask_isfinite[i]] = np.nan
                     spec, continuum = fft_remove_continuum(spectrum_parts[i],return_continuum=True)
                     spectrum_parts[i] =spec 
-                    self.model_continuum[i] = continuum
+                    self.model_continuum.append(continuum)
             elif self.params['normalize_spectrum']:
                 spectrum_parts/=np.nanmedian(spectrum_parts) 
             

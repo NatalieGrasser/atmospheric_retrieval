@@ -45,6 +45,12 @@ def load_pickle(filename):
 def flatten_list(xss):
     return [x for xs in xss for x in xs]
 
+def nanmin_list(xss):
+    return min(np.nanmin(arr) for arr in xss)
+
+def nanmax_list(xss):
+    return max(np.nanmax(arr) for arr in xss)
+
 def ensure_quantity(x, unit):
     return x.to(unit) if isinstance(x, u.Quantity) else x * unit
 

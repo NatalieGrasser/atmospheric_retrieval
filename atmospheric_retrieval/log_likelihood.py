@@ -28,7 +28,7 @@ class LogLikelihood:
         self.target_solar_metall = retr_obj.parameters.params['target_solar_metall']
         self.scale_flux   = retr_obj.parameters.params['scale_flux']
         self.scale_err    = retr_obj.parameters.params['scale_err']
-        self.N_d_total    = self.mask_isfinite.sum() # number of degrees of freedom / valid datapoints
+        self.N_d_total = sum(mask.sum() for mask in self.mask_isfinite) # number of degrees of freedom / valid datapoints
         self.alpha = 2 # from Ruffio+2019
         self.N_phi = 1 # number of linear scaling parameters
         self.sigma_p = 0.05 #bar
@@ -72,12 +72,12 @@ class LogLikelihood:
 
         for i in range(self.n_parts): # Loop over all segments
 
-            mask_i = self.mask_isfinite[i,:] # mask out nans
+            mask_i = self.mask_isfinite[i] # mask out nans
             N_d = mask_i.sum() # Number of (valid) data points in this order/det pair
             if N_d == 0:
                 continue
-            data_flux_i = self.data_flux[i,mask_i] # data flux
-            m_flux_i = m_flux[i,mask_i] # model flux
+            data_flux_i = self.data_flux[i][mask_i] # data flux
+            m_flux_i = m_flux[i][mask_i] # model flux
 
             if not np.all(np.isfinite(m_flux_i)): # unresolved issue, quick fix for now
                 model_mask_i = np.isfinite(m_flux_i)
@@ -86,7 +86,7 @@ class LogLikelihood:
             if Cov[i].is_matrix:
                 Cov[i].get_cholesky() # Retrieve a Cholesky decomposition
             if self.scale_flux: # Find the optimal phi-vector to match the observed spectrum
-                self.m_flux_phi[i,mask_i],self.phi[i]=self.get_flux_scaling(data_flux_i, m_flux_i, Cov[i])
+                self.m_flux_phi[i][mask_i],self.phi[i]=self.get_flux_scaling(data_flux_i, m_flux_i, Cov[i])
 
             residuals_phi = (self.data_flux[i] - self.m_flux_phi[i]) # Residuals wrt scaled model
             inv_cov_0_residuals_phi = Cov[i].solve(residuals_phi[mask_i])

@@ -9,7 +9,19 @@
 !Sing+2024_PT.txt
 !config.py
 
-convert_pRT2_to_pRT3_opas.ipynb
+*/TOI-270d/*
+!/spectra/*
+!data.ipynb
+!config.py
 
+*/COCONUTS-2b/*
+*/epsIndiAb/*
+
+
+convert_pRT2_to_pRT3_opas.ipynb
+*run.py
 *.out
 *debugging.ipynb
+
+*pRT_model.ipynb
+*simple_retrieval.ipynb

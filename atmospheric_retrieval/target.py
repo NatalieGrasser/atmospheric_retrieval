@@ -39,7 +39,6 @@ class Target:
             self.species_info = pd.read_csv(os.path.join('species_info.csv'), index_col=0)
         
         self.n_parts=1
-        self.n_pixels = None
         if self.instrument == 'CRIRES':
             self.n_orders=7
             self.n_dets=3
@@ -62,10 +61,44 @@ class Target:
         else:
             self.vbary = 0
 
-        self.wl,self.fl,self.err = self.load_spectrum(properties['input_spectrum'])
+        data_spec = properties['input_spectrum']
+        if isinstance(data_spec, list): # possibly inhomogeneous
+            self.n_parts = len(data_spec)
+            self.wl,self.fl,self.err,self.n_pixels = [],[],[],[]
+            for data_file in data_spec:
+                wl,fl,err = self.load_spectrum(data_file)
+                self.wl.append(wl)
+                self.fl.append(fl)
+                self.err.append(err)
+                self.n_pixels.append(len(wl))
+        else:
+            wl,fl,err = self.load_spectrum(data_spec)
+            if wl.dtype == object: # inhomogeneous
+                self.n_parts = len(wl)
+                self.wl,self.fl,self.err,self.n_pixels = [],[],[],[]
+                for w,f,e in zip(wl,fl,err):
+                    self.wl.append(w)
+                    self.fl.append(f)
+                    self.err.append(e)
+                    self.n_pixels.append(len(w))
+            else:
+                self.n_pixels = len(wl)
+                self.wl  = np.reshape(wl,  (self.n_parts, self.n_pixels))
+                self.fl  = np.reshape(fl,  (self.n_parts, self.n_pixels))
+                self.err = np.reshape(err, (self.n_parts, self.n_pixels))
+
+        self.mask_isfinite = self.get_mask_isfinite()
+
+        if self.remove_continuum:
+            for i in range(len(fl)):
+                if np.isnan(self.fl[i]).all()==False:
+                    mask = self.mask_isfinite[i]
+                    self.fl[i] = fft_remove_continuum(self.fl[i])
+                    self.fl[i][~mask] =np.nan
+
         self.fwhm = properties['fwhm'] if 'fwhm' in properties else None
         self.spectral_resolution = self.calc_resolution()
-        self.spectral_resolution = np.nanmedian(self.spectral_resolution)
+        #self.spectral_resolution = np.nanmedian(self.spectral_resolution)
 
     def load_spectrum(self,input_file):
         """
@@ -87,7 +120,6 @@ class Target:
             name = name.lower()
             name = re.sub(r'\(.*?\)', '', name)  # remove units in brackets
             return name.strip()
-
 
         def _find_column(columns, keywords, exclude_keywords=None):
             exclude_keywords = exclude_keywords or []
@@ -136,68 +168,61 @@ class Target:
 
         # 2. Detect format
         suffix = file.suffix.lower()
-
-        if suffix == ".csv":
-            df = pd.read_csv(file)
+        header = ''
+        if suffix == ".npz":
+            wl = data['wavelengths']
+            fl = data['flux']
+            err = data['err']
         else:
-            # try reading header
-            with open(file, 'r') as f:
-                first_line = f.readline()
-
-            if first_line.startswith("#"):
-                header = first_line[1:].strip().split()
-                data = np.genfromtxt(file, skip_header=1)
-                df = pd.DataFrame(data, columns=header)
+            if suffix == ".csv":
+                df = pd.read_csv(file)
             else:
-                # no header → fallback
-                data = np.genfromtxt(file)
-                df = pd.DataFrame(data)
+                # try reading header
+                with open(file, 'r') as f:
+                    first_line = f.readline()
 
-        # 3. Identify columns
-        cols = df.columns
-        wl_col  = _find_column(cols, ["wave", "wl", "lambda"])
-        fl_col = _find_column(cols, ["flux", "depth", "rp", "rplanet"],
-                              exclude_keywords=["err", "unc", "sigma"])
-        err_col = _find_column(cols, ["err","unc","sigma"])
+                if first_line.startswith("#"):
+                    header = first_line[1:].strip().split()
+                    data = np.genfromtxt(file, skip_header=1)
+                    df = pd.DataFrame(data, columns=header)
+                else:
+                    # no header → fallback
+                    data = np.genfromtxt(file)
+                    df = pd.DataFrame(data)
 
-        # 4. Fallback if no names
-        if wl_col is None or fl_col is None:
-            # assume standard ordering
-            wl_col  = cols[0]
-            fl_col  = cols[1]
-            err_col = cols[2] if len(cols) > 2 else None
+            # 3. Identify columns
+            cols = df.columns
+            wl_col  = _find_column(cols, ["wave", "wl", "lambda"])
+            fl_col = _find_column(cols, ["flux", "depth", "rp", "rplanet"],
+                                exclude_keywords=["err", "unc", "sigma"])
+            err_col = _find_column(cols, ["err","unc","sigma"])
 
-        # 5. Assign arrays
-        wl  = df[wl_col].to_numpy()
-        fl  = df[fl_col].to_numpy()
-        err = df[err_col].to_numpy() if err_col else np.full_like(fl, np.nan)
+            # 4. Fallback if no names
+            if wl_col is None or fl_col is None:
+                # assume standard ordering
+                wl_col  = cols[0]
+                fl_col  = cols[1]
+                err_col = cols[2] if len(cols) > 2 else None
 
-        # convert Rp/Rs → depth if needed
-        if _needs_square(fl_col):
-            #print(f"[INFO] Column '{fl_col}' detected as Rp/Rs → squaring to get transit depth.")
-            fl = fl**2
+            # 5. Assign arrays
+            wl  = df[wl_col].to_numpy()
+            fl  = df[fl_col].to_numpy()
+            err = df[err_col].to_numpy() if err_col else np.full_like(fl, np.nan)
 
-        if self.emission_or_transmission=='transmission':
-            fl*=100 # so that it is in % (nicer)
-            err*=100
+            if any('ppm' in s for s in header):
+                fl*=1e-6
+                err*=1e-6
 
-        if self.n_pixels is None:
-            self.n_pixels = len(wl)
+            # convert Rp/Rs → depth if needed
+            if _needs_square(fl_col):
+                #print(f"[INFO] Column '{fl_col}' detected as Rp/Rs → squaring to get transit depth.")
+                fl = fl**2
 
-        self.wl  = np.reshape(wl,  (self.n_parts, self.n_pixels))
-        self.fl  = np.reshape(fl,  (self.n_parts, self.n_pixels))
-        self.err = np.reshape(err, (self.n_parts, self.n_pixels))
+            if self.emission_or_transmission=='transmission':
+                fl*=100 # so that it is in % (nicer)
+                err*=100
 
-        self.mask_isfinite = self.get_mask_isfinite()
-
-        if self.remove_continuum:
-            for i in range(self.fl.shape[0]):
-                if np.isnan(self.fl[i]).all()==False:
-                    mask = self.mask_isfinite[i]
-                    self.fl[i] = fft_remove_continuum(self.fl[i])
-                    self.fl[i][~mask] =np.nan
-
-        return self.wl,self.fl,self.err
+        return wl,fl,err
     
     def calc_resolution(self):
         """
@@ -215,21 +240,25 @@ class Target:
             values per wavelength point.
         """
         
-        self.spectral_resolutions=np.zeros((self.n_parts))
+        res = []
         if self.fwhm is not None:
             for i in range(self.n_parts):
                 wave = self.wl[i]
                 pix_size = np.median(np.diff(wave))
                 fwhm = pix_size*self.fwhm
-                self.spectral_resolutions[i] = np.median(wave)/fwhm
-            return np.nanmedian(self.spectral_resolutions)
+                R = np.median(wave)/fwhm
+                res.append(np.nanmedian(R))
+            return res
 
         else:
-            wl = self.wl.flatten()
-            wl = np.sort(wl) # ensure sorted!
-            delta_wl = np.gradient(wl)
-            R = wl / delta_wl
-            return R
+            res = []
+            for i in range(self.n_parts):
+                wl = self.wl[i]
+                wl = np.sort(wl) # ensure sorted!
+                delta_wl = np.gradient(wl)
+                R = wl / delta_wl
+                res.append(np.nanmedian(R))
+            return res
 
     def get_mask_isfinite(self):
         """
@@ -242,11 +271,10 @@ class Target:
             valid (finite) flux and uncertainty values.
         """
 
-        self.n_parts, self.n_pixels = self.fl.shape
-        self.mask_isfinite=np.empty((self.n_parts, self.n_pixels), dtype=bool)
+        self.mask_isfinite= []
         for i in range(self.n_parts):
             mask_i = np.isfinite(self.fl[i]) & np.isfinite(self.err[i])
-            self.mask_isfinite[i]=mask_i
+            self.mask_isfinite.append(mask_i)
         return self.mask_isfinite
     
     def prepare_for_covariance(self):
@@ -266,9 +294,9 @@ class Target:
         self.err_eff = np.empty((self.n_parts), dtype=object)
         for i in range(self.n_parts):
             mask_i = self.mask_isfinite[i] # Mask the arrays, on-the-spot is slower
-            wave_i = self.wl[i,mask_i]
+            wave_i = self.wl[i][mask_i]
             separation_i = np.abs(wave_i[None,:]-wave_i[:,None]) # wavelength separation
             self.separation[i] = separation_i
-            err_i = self.err[i,mask_i]  
+            err_i = self.err[i][mask_i]  
             self.err_eff[i] = np.nanmedian(err_i) if err_i.size != 0 else np.nan
         return self.separation,self.err_eff

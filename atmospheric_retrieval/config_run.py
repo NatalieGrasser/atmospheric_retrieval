@@ -1,6 +1,9 @@
 #from petitRADTRANS.config import petitradtrans_config_parser
 #petitradtrans_config_parser.set_input_data_path('/net/lem/data2/pRT3_formatted')
 
+# run as:
+# python config_run.py obj_name chemistry_type PT_type N_live evtol
+
 def init_retrieval(target,
                     PT_type,
                     chemistry,
@@ -93,6 +96,8 @@ def init_retrieval(target,
         'input_spectrum': None, # in folder ./targetname/, .txt file with 3 columns: wavelength, flux, uncertainties
         'wavelength_unit': u.nm,
         'flux_unit': None, # None if normalized, else set a unit with astropy quantities, or 'photons' for photons/s/m^3
+        'num_radtrans_objects': None, # determined from number of segments otherwise
+
         'opa_mode': 'lbl', # lbl for high-res, c-k for low-res
         'lbl_opacity_sampling': 3, # only for high-res
         'const_efficiency_mode': True, # constant efficiency mode
@@ -100,6 +105,7 @@ def init_retrieval(target,
         'use_GP': False, # use Gaussian processes for uncertainty modeling
         'emission_or_transmission': 'emission',
         'ref_pressure': 0.01, # for transmission spectroscopy
+        'offset_prior': None, # offset between segments
 
         # the following must be given in astropy units to avoid issues
         'R_p_prior': None, # radius of planet, u.R_jup
@@ -229,7 +235,6 @@ def init_retrieval(target,
         for n in range(use_params['pt_points']):
             pt_params[f'T{n}']=(use_params['T_prior'],rf'$T_{n}$') # T0 = bottom of atmosphere
 
-    # not working correctly yet
     elif PT_type=='PTgrad' and use_params['fix_PT'] is None:
         for n in range(use_params['pt_points']):
             pt_params[f'dlnT_dlnP_{n}']=([use_params['Tgrad_lower'],0.4],rf'$\nabla T_{n}$')
@@ -261,6 +266,7 @@ def init_retrieval(target,
             if use_params['const_species']!=[]:
                 for species_i in use_params['const_species']:
                     chemistry_params[f"log_{species_i}"]=(use_params['VMR_prior'],rf"log {species_info.loc[species_i,'mathtext_name']}")
+                    #chemistry_params[f"log_{species_i}"]=([-15,-4],rf"log {species_info.loc[species_i,'mathtext_name']}")
 
         if chemistry=='flexequ': # vary equchem abundances by constant factor
             for species in species_names:
@@ -375,6 +381,11 @@ def init_retrieval(target,
         GP_params={'log_a': ([-1,1], r'$\log\ a$'),
                 'log_l': ([-3,1], r'$\log\ l$')}
         free_params.update(GP_params)
+
+    if use_params['offset_prior'] is not None:
+        for n in range(use_params['num_offset_prior']): # one for each additional segment
+            n +=1
+            free_params.update({f'offset_{n}': (use_params['offset_prior'], f'$\Delta_{n}$')})
 
     free_params.update(chemistry_params)
     parameters = Parameters(free_params, constant_params)

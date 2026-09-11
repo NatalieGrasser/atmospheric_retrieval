@@ -59,6 +59,8 @@ class Retrieval:
         log_p_lower = self.parameters.params['log_P_lower']
         self.pressure = np.logspace(log_p_lower,log_p_upper,self.n_atm_layers)
         self.use_partial_pressure = self.parameters.params['use_partial_pressure'] # retrieve partial pressure OR VMRs
+        self.offset_params = [p for p in self.parameters.params if p.startswith("offset_")
+                            and not p.endswith("prior") and not p.endswith("equ") and not p.endswith("_err")]
 
         if self.parameters.params['opa_mode']=='lbl':
             if 'lbl_opacity_sampling' in self.parameters.params: # lbl opacities
@@ -83,7 +85,7 @@ class Retrieval:
                 else:
                     self.fixed_species.append(species_i)
 
-        self.n_parts, self.n_pixels = self.data_flux.shape
+        self.n_parts, self.n_pixels = self.target.n_parts, self.target.n_pixels
         self.n_params = len(parameters.free_params)
         self.output_name=f'{chemistry}_{PT_type}_N{Nlive}_ev{evtol}{folder_suffix}' # output folder name
         self.cwd = os.getcwd()
@@ -108,10 +110,10 @@ class Retrieval:
                 continue
             if use_GP==True: # use Gaussian processes covariance matrix
                 maxval=10**(self.parameters.param_priors['log_l'][1])*3 # 3*max value of prior of l
-                self.Cov[i] = CovGauss(err=self.data_err[i,mask_i],separation=self.separation[i], 
+                self.Cov[i] = CovGauss(err=self.data_err[i][mask_i],separation=self.separation[i], 
                                         err_eff=self.err_eff[i],max_separation=maxval)
             if use_GP==False: # use simple diagonal covariance matrix
-                self.Cov[i] = Covariance(err=self.data_err[i,mask_i])
+                self.Cov[i] = Covariance(err=self.data_err[i][mask_i])
         self.LogLike = LogLikelihood(retr_obj=self)
 
         # redo radtrans objects when introdocuing new species
@@ -134,6 +136,14 @@ class Retrieval:
 
     def get_radtrans_objects(self,redo=False,for_species=None):
 
+        num_rt_obj = self.parameters.params['num_radtrans_objects']
+        if self.instrument=='CRIRES':
+            self.atm_segments = self.n_orders
+        elif num_rt_obj is not None:
+            self.atm_segments = num_rt_obj
+        else:
+            self.atm_segments = self.n_parts
+
         self.line_species=self.species_pRT.copy() if for_species==None else for_species
         continuum_opacities = ['H2-H2', 'H2-He']
         if 'H-' in self.line_species:
@@ -149,7 +159,7 @@ class Retrieval:
                 return radtrans_objects
             else:
                 not_exists=True
-                
+
         if for_species!=None or not_exists:
             radtrans_objects=[]
             self.CIA = ['H2--H2-NatAbund__BoRi.R831_0.6-250mu', 'H2--He-NatAbund__BoRi.DeltaWavenumber2_0.5-500mu']
@@ -158,17 +168,14 @@ class Retrieval:
             if 'CO2' in self.species_pRT:
                 self.CIA.append('C-O2--C-O2-NatAbund.DeltaWavelength1e-6_3-100mu')
 
-            if self.instrument=='CRIRES':
-                self.atm_segments = self.n_orders
-            else:
-                self.atm_segments = self.n_parts
-
             for seg in range(self.atm_segments):
 
                 # expand wavelength range based on max RV in prior
                 if self.instrument == 'CRIRES':
                     idx = slice(seg * self.n_dets, (seg + 1) * self.n_dets)
                     wave_segment = self.data_wave[idx]
+                elif num_rt_obj is not None: # take entire wavelength range
+                    wave_segment = flatten_list(self.data_wave)
                 else:
                     wave_segment = self.data_wave[seg]
                 wlmin = np.min(wave_segment)
@@ -230,7 +237,7 @@ class Retrieval:
                         verbose=True,const_efficiency_mode=cef_mode, sampling_efficiency = smp_eff,
                         n_live_points=N_live_points,resume=resume,
                         evidence_tolerance=evidence_tolerance, # high number -> stops earlier
-                        dump_callback=self.PMN_callback,n_iter_before_update=50)
+                        dump_callback=self.PMN_callback,n_iter_before_update=100)
 
     def PMN_callback(self,n_samples,n_live,n_params,live_points,posterior, 
                     stats,max_ln_L,ln_Z,ln_Z_err,nullcontext):
@@ -242,14 +249,18 @@ class Retrieval:
             posterior_dict[key]=(posterior[:,idx],self.parameters.free_params[key][1])
         self.posterior=posterior_dict
         self.params_dict,self.model_flux=self.get_params_and_spectrum()
-        self.model_flux[~self.mask_isfinite] = np.nan
+        for i in range(self.n_parts):
+            self.model_flux[i][~self.mask_isfinite[i]] = np.nan
 
         figs.summary_plot(self,show_params='all')
         figs.plot_contribution_per_species(self)
+
+        if self.n_parts>1:
+            figs.plot_spectrum_parts(self)
         if self.use_partial_pressure:
             plot_species = self.species_names.copy()
             plot_species.extend(s for s in ['H2','He'] if s not in plot_species)
-            figs.VMR_plot(self,VMR_species=plot_species,
+            figs.VMR_plot(self,VMR_species=plot_species,wH2He=True,
                           xmin=1e-8,xmax=1e0,plotlegend=True)
         elif self.chemistry in ['equchem','quequchem','flexequ','varchem']:
             figs.VMR_plot(self,VMR_species='all')
@@ -341,11 +352,11 @@ class Retrieval:
             # create final spectrum
             self.model_object=pRT_spectrum(self,contribution=True)
             self.model_flux0=self.model_object.make_spectrum()
-            self.model_flux=np.zeros_like(self.model_flux0)
+            self.model_flux= []
             self.summed_contribution= self.model_object.summed_contribution # average over all orders
             phi=self.params_dict['phi']
             for part in range(self.n_parts):
-                self.model_flux[part]=phi[part]*self.model_flux0[part] # scale model accordingly
+                self.model_flux.append(phi[part]*self.model_flux0[part]) # scale model accordingly
             self.get_ratios() 
 
         else:
@@ -389,14 +400,17 @@ class Retrieval:
                 self.params_dict['lnZ']=self.lnZ # save lnZ of fiducial model
                 self.params_dict['lnL']=lnL
 
-            self.model_flux=np.zeros_like(self.model_flux0)
+            self.model_flux= []
             phi=self.params_dict['phi']
             for part in range(self.n_parts):
-                self.model_flux[part]=phi[part]*self.model_flux0[part] # scale model accordingly
+                self.model_flux.append(phi[part]*self.model_flux0[part]) # scale model accordingly
 
-            spectrum=np.full(shape=(self.n_pixels*self.n_parts,2),fill_value=np.nan)
-            spectrum[:,0]=self.data_wave.flatten()
-            spectrum[:,1]=self.model_flux.flatten()
+            if isinstance(self.n_pixels, list):
+                spectrum=np.full(shape=(np.sum(self.n_pixels),2),fill_value=np.nan)
+            else:
+                spectrum=np.full(shape=(self.n_pixels*self.n_parts,2),fill_value=np.nan)
+            spectrum[:,0]=flatten_list(self.data_wave)
+            spectrum[:,1]=flatten_list(self.model_flux)
 
             if self.callback_label=='final_' and getpass.getuser() == "grasser": # when running from LEM
                 save_pickle(self.params_dict,f'{self.output_dir}/params_dict.pickle')
@@ -471,17 +485,20 @@ class Retrieval:
             mathtext = []
             get_ratios = []
             if 'log_13CO' in self.parameters.param_keys:
-                get_ratios.append(('12CO','13CO'))
+                get_ratios.append(('CO','13CO'))
                 mathtext.append(r'log $^{12}$CO/$^{13}$CO')
             if 'log_C17O' in self.parameters.param_keys:
-                get_ratios.append(('12CO','C17O'))
+                get_ratios.append(('CO','C17O'))
                 mathtext.append(r'log $^{12}$CO/C$^{17}$O')
             if 'log_C18O' in self.parameters.param_keys:
-                get_ratios.append(('12CO','C18O'))
+                get_ratios.append(('CO','C18O'))
                 mathtext.append(r'log $^{12}$CO/C$^{18}$O')
             if 'log_H2(18)O' in self.parameters.param_keys:
                 get_ratios.append(('H2O','H2(18)O'))
                 mathtext.append(r'log H$_2$O/H$_2^{18}$O')
+            if 'log_13CH4' in self.parameters.param_keys:
+                get_ratios.append(('CH4','13CH4'))
+                mathtext.append(r'log $^{12}$CH$_4$/$^{13}$CH$_4$')
 
             for i,(m1,m2) in enumerate(get_ratios): # isotope ratios    
                 p1=self.posterior[f'log_{m1}'][0]
@@ -588,7 +605,8 @@ class Retrieval:
         self.callback_label=callback_label
         self.PMN_analyse() # get/save bestfit params and final posterior
         self.params_dict,self.model_flux=self.get_params_and_spectrum() # all params + scaling phi + s^2
-        self.model_flux[~self.mask_isfinite] = np.nan
+        for i in range(self.n_parts):
+            self.model_flux[i][~self.mask_isfinite[i]] = np.nan
         if makefigs:
             if callback_label=='final_':
                 figs.make_all_plots(self,only_params=only_params,split_corner=split_corner)

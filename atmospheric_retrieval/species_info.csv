@@ -4,6 +4,7 @@ He,He,He,He,4.002602,gold,He,0,0,0,0,0
 H2O,1H2-16O__POKAZATEL.R1e+06_0.3-28.0mu,1H2-16O__POKAZATEL.R1000_0.3-50mu,H2O1,18.014680000000002,dodgerblue,H$_2$O,0,1,2,0,0
 H2(18)O,1H2-18O__HotWat78.R1e+06_0.3-28.0mu,1H2-18O__HITRAN.R1000_0.1-250mu,H2O1,20.014841,blueviolet,H$_2^{18}$O,0,1,2,0,0
 CH4,12C-1H4__MM.R1e+06_0.3-28.0mu,12C-1H4__HITEMP.R1000_0.1-250mu,C1H4,16.04236,limegreen,CH$_4$,1,0,4,0,0
+13CH4,13C-1H4__HITRAN.R1e+06_0.3-28.0mu,,C1H4,17.035,olive,$^{13}$CH$_4$,1,0,4,0,0
 CO,12C-16O__HITEMP.R1e+06_0.3-28.0mu,12C-16O__HITEMP.R1000_0.1-250mu,C1O1,28.009999999999998,orange,CO,1,1,0,0,0
 13CO,13C-16O__HITEMP.R1e+06_0.3-28.0mu,13C-16O__HITEMP.R1000_0.1-250mu,C1O1,29.002355,orangered,$^{13}$CO,1,1,0,0,0
 C18O,12C-18O__HITEMP.R1e+06_0.3-28.0mu,,C1O1,30.010161,maroon,C$^{18}$O,1,1,0,0,0
@@ -18,6 +19,7 @@ OCS,16O-12C-32S__OYT8.R1e+06_0.3-28.0mu,,C1O1S1,60.0751,chocolate,OCS,1,1,0,0,1
 SO,32S-16O__SOLIS.R1e+06_0.3-28.0mu,,O1S1,48.0644,yellow,SO,0,1,0,0,1
 SO2,32S-16O2__ExoAmes.R1e+06_0.3-28.0mu,32S-16O2__ExoAmes.R1000_0.3-50mu,O2S1,64.0638,brown,SO$_2$,0,2,0,0,1
 HCN,1H-12C-14N__Harris.R1e+06_0.3-28.0mu,1H-12C-14N__Harris.R1000_0.3-50mu,C1H1N1_1,27.02554,cyan,HCN,1,0,1,1,0
+CS2,12C-32S2__HITRAN.R1e+06_0.3-28.0mu,,C1S2,76.14,green,CS$_2$,1,0,0,0,2
 MgSiO3_amorphous,Mg-Si-O3-NatAbund(s)_amorphous__Mie.R39_0.1-250mu,Mg-Si-O3-NatAbund(s)_amorphous__Mie.R39_0.1-250mu,,100.39,blue,MgSiO$_3$,0,3,0,0,0
 MgSiO3_crystalline,Mg-Si-O3-NatAbund(s)_crystalline_000__DHS.R39_0.1-250mu,Mg-Si-O3-NatAbund(s)_crystalline_000__DHS.R39_0.1-250mu,,100.39,blue,MgSiO$_3$,0,3,0,0,0
 Mg2SiO4_crystalline,Mg2-Si-O4-NatAbund(s)_crystalline_000__DHS.R39_0.1-250mu,Mg2-Si-O4-NatAbund(s)_crystalline_000__DHS.R39_0.1-250mu,,140.693,red,Mg$_2$SiO$_4$,0,4,0,0,0

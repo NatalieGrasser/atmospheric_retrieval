@@ -44,6 +44,23 @@ if getpass.getuser() == "grasser": # when runnig from LEM
     sonora_dir = "/net/lem/data1/grasser/models/SonoraBobcat/"
 elif getpass.getuser() == "natalie": # when testing from my laptop
     path_tables = '/home/natalie/fastchem_tables'
+
+def get_plotting_params(retr_obj):
+    prm = retr_obj.parameters.params
+    data_color = prm.get('data_color', prm.get('data_color', ['k']*retr_obj.n_parts))
+    model_color = prm.get('model_color', [retr_obj.color]*retr_obj.n_parts)
+    data_color = data_color if isinstance(data_color, list) else [data_color]
+    if model_color == 'darken':
+        model_color = []
+        for d in data_color:
+            model_color.append(darken_color(d,0.6))
+    lw_m = prm.get('model_lw', 1)
+    lw = prm.get('data_lw', 1)
+    alpha_m = prm.get('model_alpha', 1)    
+    alpha = prm.get('data_alpha', 1)    
+    size= prm.get('data_markersize', 2)
+    elw= prm.get('data_elw', 0.5)
+    return data_color, model_color, lw, lw_m, alpha, alpha_m, size, elw
             
 def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
                         plot_veiling=False, rescale=False,**kwargs):
@@ -51,9 +68,12 @@ def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
     wave=retr_obj.data_wave
     flux=retr_obj.data_flux
     err=retr_obj.data_err
-    flux_m=np.copy(retr_obj.model_flux)
-    mask = np.isfinite(flux)
-    flux_m[~mask] = np.nan
+    flux_m=retr_obj.model_flux
+    mask = retr_obj.mask_isfinite
+    for i in range(retr_obj.n_parts):
+        flux_m[i][~mask[i]] = np.nan
+
+    data_color, model_color, lw, lw_m, alpha, alpha_m, size, elw = get_plotting_params(retr_obj) 
 
     suffix=''
     low=[]
@@ -62,21 +82,18 @@ def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
 
     # normalized differently, add continuum back for plotting
     # wont work like this, need to save continuum from original spectrum
-    if 'ROXs12' in retr_obj.target.name and rescale: 
-        if rescale:
-            model = pRT_spectrum(retr_obj)
-            m_flux = model.make_spectrum()
-            continuum = model.model_continuum
-            scale = [flux, err, flux_m]
-            flux, err, flux_m = [var*continuum for var in scale]
+    if retr_obj.parameters.params['remove_continuum'] and rescale: 
+        model = pRT_spectrum(retr_obj)
+        m_flux = model.make_spectrum()
+        continuum = model.model_continuum
+        scale = [flux, err, flux_m]
+        flux, err, flux_m = [var*continuum for var in scale]
 
     wl_unit = retr_obj.parameters.params['wavelength_unit'].to_string('latex')
     pm_xlim = 0.0 # in um
     s2 = retr_obj.params_dict['s2']
     if retr_obj.instrument=='CRIRES':
-        pm_xlim = 10 # in nm
-        if retr_obj.target.name=='test_ROXs12B':
-            s2*=1.5       
+        pm_xlim = 10 # in nm     
 
     if plot_veiling: # show spectrum without veiling for comparison
         retr_obj2 = copy.deepcopy(retr_obj) 
@@ -95,14 +112,14 @@ def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
     else:
         fig,ax=plt.subplots(2,1,figsize=(10,2.5),dpi=200,gridspec_kw={'height_ratios':[2,0.7]})
 
+    label_lines =[]
     for part in range(retr_obj.n_parts):
         if np.isnan(flux[part]).all():
-            #flux_m[part]/=np.nanmedian(flux_m[part])
             flux_m[part]*=np.nan # fixed ylim issue for A
             continue
         # add error for scale
         order = slice(part,part+3)
-        if part%3==0 and np.nansum(flux[order])!=0 and retr_obj.instrument=='CRIRES': # skip empty orders 
+        if part%3==0 and retr_obj.instrument=='CRIRES': # skip empty orders 
             errmean=np.nanmean(err[order]*retr_obj.params_dict['s2'][order].reshape(3,1))
             errmean=np.nanmean(err[order]*retr_obj.params_dict['s2'][order].reshape(3,1))
             ax[1].errorbar(np.min(wave[order])-3, 0, yerr=errmean, ecolor='k',elinewidth=1, capsize=2)
@@ -110,24 +127,20 @@ def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
             ax[1].errorbar(np.min(wave[order])-6, 0, yerr=std_mean, ecolor=retr_obj.color,elinewidth=1, capsize=2)
 
         if retr_obj.parameters.params['data_as_points']==False: 
-            lw=0.8
-            ax[0].plot(wave[part],flux[part],lw=lw,alpha=1,c='k',label='Data')
-            ax[1].plot(wave[part],flux[part]-flux_m[part],lw=lw,c=retr_obj.color,label='residuals')
+            ax[0].plot(wave[part],flux[part],lw=lw,alpha=alpha,c=data_color[part],label='Data')
+            ax[1].plot(wave[part],flux[part]-flux_m[part],lw=lw_m,c=data_color[part],label='residuals')
             lower=flux[part]-err[part]*retr_obj.params_dict['s2'][part]
             upper=flux[part]+err[part]*retr_obj.params_dict['s2'][part]
             low.append(np.nanmin(lower))
             up.append(np.nanmax(upper))
-            ax[0].fill_between(wave[part],lower,upper,color='k',alpha=0.15,label=f'1 $\sigma$')
+            ax[0].fill_between(wave[part],lower,upper,color=data_color[part],alpha=0.15,label=f'1 $\sigma$')
                     
-        elif retr_obj.parameters.params['data_as_points']: 
-            size=2
-            lw=1.5
-            elw=0.6          
-            ax[0].errorbar(wave[part],flux[part],yerr=err,fmt='o',markersize=size,elinewidth=elw,c='k',label='Data')
-            ax[1].scatter(wave[part],flux[part]-flux_m[part],s=size,c=retr_obj.color)
+        elif retr_obj.parameters.params['data_as_points']:        
+            ax[0].errorbar(wave[part],flux[part],yerr=err[part],fmt='o',
+                            markeredgecolor='black',markeredgewidth=elw/2,
+                           markersize=size,elinewidth=elw,c=data_color[part],label='Data')
+            ax[1].scatter(wave[part],flux[part]-flux_m[part],s=size,c=data_color[part])
 
-        #if np.isnan(flux[part]).all():# scale will be weird, set manually
-            #flux_m[part] = scale_between(ymin,ymax,flux_m[part])
         if plot_veiling:
             ax[0].plot(wave[part],model_wo_veiling[part],lw=lw,alpha=0.8,c=noveil_c,label='r$_k$=0')
             if 'd_rk' in retr_obj.params_dict:
@@ -137,31 +150,27 @@ def plot_spectrum_inset(retr_obj,inset=True,fs=10,leg_fs=None,
             model_label = f'r$_k$={rk}'
         else:
             model_label = 'Bestfit'
-        ax[0].plot(wave[part],flux_m[part],lw=lw,alpha=0.8,c=retr_obj.color,label=model_label)
-        if part==0:
-            if retr_obj.instrument=='CRIRES':
-                lines = [Line2D([0], [0], color='k',linewidth=2,label='Data'),
-                    #mpatches.Patch(color='k',alpha=0.15,label='1$\sigma$'),
-                    Line2D([0], [0], color=retr_obj.color, linewidth=2,label='Bestfit')]
-                ax[0].legend(handles=lines,fontsize=leg_fs) # to only have it once
-            elif retr_obj.instrument=='LIFE':
-                ax[0].legend(fontsize=leg_fs)
+        ax[0].plot(wave[part],flux_m[part],lw=lw_m,alpha=alpha_m,c=model_color[part],label=model_label)
+        
+        #if len(input_spectrum)==1:
+        #    if part==0:
+        #        lines = [Line2D([0], [0], color=data_color[part],linewidth=2,label='Data'),
+        #                #mpatches.Patch(color='k',alpha=0.15,label='1$\sigma$'),
+         #               Line2D([0], [0], color=model_color[part], linewidth=2,label='Bestfit')]
+        #        ax[0].legend(handles=lines,fontsize=leg_fs) # to only have it once
         ax[1].plot([np.min(wave[part]),np.max(wave[part])],[0,0],lw=0.8,alpha=1,c='k')
 
     ax[0].set_ylabel(retr_obj.ylabel,fontsize=fs)
     ax[1].set_ylabel('Res.',fontsize=fs)
-    ax[0].set_xlim(np.min(wave)-pm_xlim,np.max(wave)+pm_xlim)
-    ax[0].set_ylim(np.nanmin(np.array([flux,flux_m])),np.nanmax(np.array([flux,flux_m])))
-    ax[1].set_xlim(np.min(wave)-pm_xlim,np.max(wave)+pm_xlim)
+    ax[0].set_xlim(nanmin_list(wave)-pm_xlim,nanmax_list(wave)+pm_xlim)
+    ax[0].set_ylim(np.nanmin(np.array([nanmin_list(flux),nanmin_list(flux_m)])),
+                   np.nanmax(np.array([nanmax_list(flux),nanmin_list(flux_m)])))
+    ax[1].set_xlim(nanmin_list(wave)-pm_xlim,nanmax_list(wave)+pm_xlim)
     tick_spacing=10
     ax[1].xaxis.set_minor_locator(ticker.MultipleLocator(tick_spacing))
     ax[0].tick_params(labelsize=fs)
     ax[1].tick_params(labelsize=fs)
     
-    if np.isnan(flux[:3]).all():
-        ax[0].set_xlim(np.min(wave[3:])-pm_xlim,np.max(wave)+pm_xlim)
-        ax[1].set_xlim(np.min(wave[3:])-pm_xlim,np.max(wave)+pm_xlim)
-
     if inset==True and retr_obj.instrument=='CRIRES':
         suffix='_inset'
         parts = slice(15,18) # 5th order
@@ -903,6 +912,21 @@ def plot_pt(retr_obj,fs=12,figsize=5,comp_pt=True,show_cond=False,
                     lw=1.5,alpha=0.8,color=colors[2])
             lines.append(Line2D([0], [0], color=colors[2], alpha=0.8,linewidth=1.5, 
                                 linestyle='--',label=f'{retr_obj3.target.name} contr.'))
+            
+    if 'retr_obj4' in kwargs:
+        retr_obj4=kwargs.get('retr_obj4')
+        colors.append(retr_obj4.color)
+        object_label4=f'{retr_obj4.target.name} retr'
+        xmin4,xmax4=plot_temperature(retr_obj4,ax,object_label4,color=colors[3])
+        xmin=np.nanmin([xmin,xmin2,xmin3,xmin4])
+        xmax=np.nanmax([xmax,xmax2,xmax3,xmax4])
+        if show_contr:
+            summed_contr4=retr_obj4.summed_contribution
+            contribution_plot4=summed_contr4/np.max(summed_contr4)*(xmax-xmin)+xmin
+            ax.plot(contribution_plot4,retr_obj4.model_object.pressure,linestyle='dashed',
+                    lw=1.5,alpha=0.8,color=colors[2])
+            lines.append(Line2D([0], [0], color=colors[2], alpha=0.8,linewidth=1.5, 
+                                linestyle='--',label=f'{retr_obj4.target.name} contr.'))
 
     if show_contr:
         summed_contr=retr_obj.summed_contribution 
@@ -1274,8 +1298,11 @@ def make_all_plots(retr_obj,only_params=None,
     
     if retr_obj.chemistry=='flexequ':
         plot_scaled_abunds(retr_obj)
+
+    if retr_obj.n_parts>1:
+        plot_spectrum_parts(retr_obj)
     
-def summary_plot(retr_obj,**kwargs):
+def summary_plot(retr_obj,show_params='all',**kwargs):
 
     fs=12
     figsize=14
@@ -1409,8 +1436,8 @@ def summary_plot(retr_obj,**kwargs):
             param_names.append(f"log_{spec}{suffix}")
         abunds, param_names = zip(*sorted(zip(abunds, param_names)))
         only_params.extend(param_names[-8:][::-1]) # get most abundant species
-    if 'show_params' in kwargs:
-        only_params=kwargs.get('show_params')
+    if show_params is not None:
+        only_params= show_params
         if only_params=='all':
             only_params = retr_obj.parameters.free_params
         #figsize=15
@@ -1444,6 +1471,8 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
 
     if 'show_params' in kwargs:
         only_params=kwargs.get('show_params')
+        if only_params=='all':
+            only_params=retr_obj1.parameters.free_params.keys()
         posterior1, labels = get_plotposterior_labels(retr_obj1,only_params)
         posterior2, _ = get_plotposterior_labels(retr_obj2,only_params)
 
@@ -1470,19 +1499,11 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
 
         posterior1, labels = get_plotposterior_labels(retr_obj1,only_params)
 
-        # add log_O16_18_ratio to equchem again, bc freechem has C18O and H218O ratios
-        #only_params=['log_g','C/O','Fe/H','log_C12_13_ratio','log_O16_17_ratio','log_O16_18_ratio','log_O16_18_ratio']
         only_params=['log_g','C/O','Fe/H','log_C12_13_ratio','log_H2O16_18_ratio']
         posterior2, labels = get_plotposterior_labels(retr_obj2,only_params)
         figsize=8.5
-        legend_labels = ['Free','Equ']
+        #legend_labels = ['Free','Equ']
         l, b, w, h = [0.62,0.72,0.33,0.33] # left, bottom, width, height for PT plot
-
-        if 'retr_obj3' in kwargs: # quequchem
-            num=3
-            retr_obj3=kwargs.get('retr_obj3')
-            posterior3, labels = get_plotposterior_labels(retr_obj3,only_params)
-            legend_labels.append('Quequ')
 
     else: # two equchem/equchem retrievals
 
@@ -1490,6 +1511,16 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
             only_params=kwargs.get('show_params')
         posterior1, labels = get_plotposterior_labels(retr_obj1,only_params)
         posterior2, _ = get_plotposterior_labels(retr_obj2,only_params)
+
+    if 'retr_obj3' in kwargs: # quequchem
+        num=3
+        retr_obj3=kwargs.get('retr_obj3')
+        posterior3, labels = get_plotposterior_labels(retr_obj3,only_params)
+
+    if 'retr_obj4' in kwargs: # quequchem
+        num=4
+        retr_obj4=kwargs.get('retr_obj4')
+        posterior4, labels = get_plotposterior_labels(retr_obj4,only_params)
 
     both_posteriors = np.vstack([posterior1, posterior2])
     fig = plt.figure(figsize=(figsize,figsize)) # fix size to avoid memory issues
@@ -1509,25 +1540,6 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
         
         ranges = [(np.min([np.min(posterior1[:, i]),np.min(posterior2[:, i])]), 
                    np.max([np.max(posterior1[:, i]),np.max(posterior2[:, i])])) for i in range(posterior1.shape[1])]
-
-        if retr_obj.target.name=='2M1425' and suffix =='abunds_':
-            ranges[3] = (-11,-4.7) # increase range for CH4 to make better visible
-            ranges[4] = (-11,-3.5) # increase range for H2S to make better visible
-            ranges[6] = (-12,-4.7) # increase range for H218O to make better visible
-        if 'ROXs' in retr_obj.target.name:
-            if "rv" in only_params:
-                rv_idx = only_params.index("rv")
-                ranges[rv_idx] = (-5.6,-2.4) # vsini
-            if 'vsini' in only_params:
-                vsini_idx = only_params.index("vsini")
-                ranges[vsini_idx] = (2.5,9) # vsini
-            if 'C/O' in only_params:
-                CO_idx = only_params.index("C/O")
-                ranges[CO_idx] = (0.45,0.93) # C/O  
-            FeH_idx = only_params.index("Fe/H")
-            ranges[FeH_idx] = (-0.65,0.05) # Fe/H 
-            COiso_idx = only_params.index("log_C12_13_ratio")
-            ranges[COiso_idx] = (1.47,2.1) # 12/13C 
 
         fig = corner.corner(posterior, 
                         labels=labels, 
@@ -1570,10 +1582,16 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
     titles_list=[titles1,titles2]
 
     if 'retr_obj3' in kwargs:
-        titles3=plot_corner(posterior3,retr_obj3,labels,fig)
+        titles3,ranges=plot_corner(posterior3,retr_obj3,labels,fig,col=retr_obj3.color)
         enum=[0,1,2]
-        titles_list.append(titles3)
+        titles_list = [titles1,titles2,titles3]
         colors_list.append(retr_obj3.color)
+
+    if 'retr_obj4' in kwargs:
+        titles4,ranges=plot_corner(posterior4,retr_obj4,labels,fig,col=retr_obj4.color)
+        enum=[0,1,2,3]
+        titles_list = [titles1,titles2,titles3,titles4]
+        colors_list.append(retr_obj4.color)
 
     for i, axi in enumerate(fig.axes):
         fig.axes[i].title.set_visible(False) # remove original titles
@@ -1616,6 +1634,9 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
                 y=y_title-(0.2*(run+1))
             elif len(enum)==3:
                 y_title=1.47
+                y=y_title-0.12-(0.13*(run+0.2))
+            elif len(enum)==4:
+                y_title=1.5
                 y=y_title-0.12-(0.13*(run+0.2))
             if run == 0: # first retr, add parameter name
                 fig.axes[j].text(0.5, y_title, s[0], fontsize=fs,
@@ -1665,33 +1686,6 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
         ax = fig.axes[dim * (ndim + 1)]  # diagonal axes
         ax.set_ylim(0, y_max[dim])
 
-    if "Sorg" in retr_obj1.target.name:
-        from LIFE_pRT import get_input_dict
-        def count_dlnT_dlnP_keys(d):
-            count = 0
-            n = 0
-            while True:
-                key = f"dlnT_dlnP_{n}"
-                if key in d:
-                    count += 1
-                    n += 1
-                else:
-                    break
-            return count
-        n_pt = count_dlnT_dlnP_keys(retr_obj1.params_dict)
-        LIFE_parameters = get_input_dict(retr_obj1.target.name,retr_obj1.pressure,n_pt)
-        compare=[]
-        for key_i in only_params:
-            if key_i in LIFE_parameters.keys():
-                value_i=LIFE_parameters[key_i]
-                compare.append(value_i) # add only those values that are used in cornerplot
-        x=0
-        for i in range(len(compare)):
-            #titles[x] = titles[x]+'\n'+f'in: {np.round(compare[i],decimals=2)}'
-            #fig.axes[x].title.set_text(titles[x])
-            fig.axes[x].axvline(compare[i],c=retr_obj1.target.in_col,lw=1,ls='dashed')
-            x+=len(labels)+1
-
     plt.subplots_adjust(wspace=0, hspace=0)
 
     if with_pt==True:
@@ -1703,7 +1697,12 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
             plot_pt(retr_obj1,retr_obj2=retr_obj2,ax=ax_PT,
                     legend_labels=legend_labels,comp_pt=False,
                     colors=colors,show_legend=show_legend,
-                    show_contr=show_contr,contr_as_curve=show_contr)
+                    show_contr=show_contr,contr_as_curve=contr_as_curve)
+        elif 'retr_obj4' in kwargs:
+            plot_pt(retr_obj1,retr_obj2=retr_obj2,ax=ax_PT,
+                    legend_labels=legend_labels,comp_pt=False,
+                    colors=colors,show_legend=show_legend,
+                    show_contr=show_contr,contr_as_curve=contr_as_curve)
         else:
             plot_pt(retr_obj1,retr_obj2=retr_obj2,
                     ax=ax_PT,retr_obj3=retr_obj3,
@@ -1744,7 +1743,7 @@ def compare_retrievals(retr_obj1,retr_obj2,fs=12,with_pt=True,
 
 def VMR_plot(retr_obj,fs=10,n=8,VMR_species='all',comp_equ=False,sigma=2,
                 addname=False,plotlegend=False,wH2He=False,show_contr=True,
-                xmin=1e-12,xmax=1e-2,save_jpg=False,add_species=None,
+                xmin=1e-12,xmax=1e-1,save_jpg=False,add_species=None,
                 ymin=None,ymax=None,figsize=(5.5,3.5),linestyles=[],**kwargs):
 
     prefix = retr_obj.callback_label if retr_obj.callback_label=='live_' else ''
@@ -1752,7 +1751,7 @@ def VMR_plot(retr_obj,fs=10,n=8,VMR_species='all',comp_equ=False,sigma=2,
     output_dir=retr_obj.output_dir
     ymin = np.min(retr_obj.pressure) if ymin==None else ymin
     ymax = np.max(retr_obj.pressure) if ymax==None else ymax
-    xmax=1e0 if wH2He else 1e-2
+    #xmax=1e0 if wH2He else 1e-1
 
     if 'ax' in kwargs:
         ax=kwargs.get('ax')
@@ -2357,7 +2356,7 @@ def plot_scaled_abunds(retr_obj): # plot abundances of scaled equchem
     return
 
 def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,add_data=True,
-                                    wH2He = False, show_continuum=False,**kwargs):
+                                  plot_total=True, wH2He = False, show_continuum=False,**kwargs):
 
     radtrans = retr_obj.radtrans_objects[0]
     species_names = retr_obj.species_names
@@ -2509,15 +2508,16 @@ def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,add_data=True,
     ax.set_xlim(np.min(wl),np.max(wl))
 
     if add_data:
-        lam = retr_obj.data_wave.flatten()
-        fl = retr_obj.data_flux.flatten()
-        err = retr_obj.data_err.flatten()
-        data_size=1.3
-        elw=data_size/6
-        data_alpha = 0.4
-        ax.errorbar(lam,fl,yerr=err,fmt='o',markersize=data_size,elinewidth=elw,
-                    markerfacecolor=retr_obj.color,markeredgecolor='black',
-                    markeredgewidth=elw,alpha=data_alpha)
+        wave = retr_obj.data_wave
+        flux = retr_obj.data_flux
+        err = retr_obj.data_err
+        data_color, model_color, lw, lw_m, alpha, alpha_m, size, elw = get_plotting_params(retr_obj)
+        for part in range(retr_obj.n_parts):
+            if prm['data_as_points']:
+                ax.errorbar(wave[part],flux[part],yerr=err[part],fmt='o',markeredgecolor='black',
+                                markersize=size,elinewidth=elw,c=data_color[part],alpha=alpha,markeredgewidth=elw/2)
+            else:
+                ax.plot(wave[part],flux[part],lw=lw,alpha=alpha,c=data_color[part])
 
     dp_max, dp_min = [], []
     leg_y = 1.25
@@ -2543,7 +2543,8 @@ def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,add_data=True,
             dp_max.append(np.nanmax(dp))
             dp_min.append(np.nanmin(dp))
 
-        axi.plot(wl, tot, c='k',alpha=tot_alpha,lw=0.8)
+        if plot_total and any(x < 1000 for x in retr_obj.spectral_resolution):
+            axi.plot(wl, tot, c='k',alpha=tot_alpha,lw=0.8)
         if show_continuum:
             axi.plot(wl, bb, c='k',linestyle='dotted',lw=3,alpha=bb_alpha)
 
@@ -2552,10 +2553,10 @@ def plot_contribution_per_species(retr_obj,fs=10,plot_legend=True,add_data=True,
     lines = plot_contribs(tot,contribs,bb,ax)
     handles1 = [Line2D([0], [0], color='k',linewidth=2,alpha=tot_alpha,label='Total')]
 
-    if add_data:
-        handles1.append(Line2D([0], [0], marker='o', linestyle='none', markersize=4,
-                    markerfacecolor=retr_obj.color, markeredgecolor='black', markeredgewidth=4/6,
-                    color='k',alpha=data_alpha,label='Data'))
+    #if add_data:
+        #handles1.append(Line2D([0], [0], marker='o', linestyle='none', markersize=4,
+                   # markerfacecolor=retr_obj.color, markeredgecolor='black', markeredgewidth=4/6,
+                   # color='k',alpha=alpha,label='Data'))
     
     if show_continuum:
         handles1.append(Line2D([0], [0], color='k',linewidth=3,linestyle='dotted',alpha=bb_alpha,
@@ -2732,3 +2733,46 @@ def plot_opacities(retr_obj,species=None,
         name = 'opacity_contributions' if retr_obj.callback_label=='final_' else f'{retr_obj.callback_label}opacity_contributions'
         plt.savefig(f'{retr_obj.output_dir}/{name}.pdf',dpi=200)
         plt.close()
+
+def plot_spectrum_parts(retr_obj):
+
+    n_parts = retr_obj.n_parts
+    wave = retr_obj.data_wave
+    flux = retr_obj.data_flux
+    err = retr_obj.data_err
+    flux_m = retr_obj.model_flux
+    prm = retr_obj.parameters.params
+    data_color, model_color, lw, lw_m, alpha, alpha_m, size, elw = get_plotting_params(retr_obj)
+
+    fig,ax=plt.subplots(n_parts+1,1,figsize=(5,n_parts*2),dpi=200)
+    for part in range(n_parts):
+
+        label = prm.get('parts_labels', ['']*n_parts)[part]  
+        if prm['data_as_points']==False: 
+            ax[part].plot(wave[part],flux[part],lw=lw,alpha=alpha,c=data_color[part],label=label)
+            ax[-1].plot(wave[part],flux[part],lw=lw,alpha=alpha,c=data_color[part],label=label)
+            #ax[1].plot(wave[part],flux[part]-flux_m[part],lw=lw,c=retr_obj.color,label='residuals')
+            #lower=flux[part]-err[part]*retr_obj.params_dict['s2'][part]
+            #upper=flux[part]+err[part]*retr_obj.params_dict['s2'][part]
+            #ax[0].fill_between(wave[part],lower,upper,color='k',alpha=0.15,label=f'1 $\sigma$')
+                    
+        elif prm['data_as_points']: 
+            ax[part].errorbar(wave[part],flux[part],yerr=err[part],fmt='o',markeredgecolor='black',label=label,
+                            markersize=size,elinewidth=elw,c=data_color[part],alpha=alpha,markeredgewidth=elw/2)
+            ax[-1].errorbar(wave[part],flux[part],yerr=err[part],fmt='o',markeredgecolor='black',label=label,
+                            markersize=size,elinewidth=elw,c=data_color[part],alpha=alpha,markeredgewidth=elw/2)
+ 
+        ax[part].plot(wave[part],flux_m[part],lw=lw_m,alpha=alpha_m,c=model_color[part])
+        ax[-1].plot(wave[part],flux_m[part],lw=lw_m,alpha=alpha_m,c=model_color[part])
+        ax[part].set_ylabel(retr_obj.ylabel)
+
+        if label!='':
+            ax[part].legend()
+
+    wl_unit = retr_obj.parameters.params['wavelength_unit'].to_string('latex')
+    ax[-1].set_xlabel(rf'Wavelength [{wl_unit}]')
+    ax[-1].set_ylabel(retr_obj.ylabel)
+    fig.tight_layout()    
+    name = 'bestfit_parts' if retr_obj.callback_label=='final_' else f'{retr_obj.callback_label}bestfit_parts'
+    fig.savefig(f'{retr_obj.output_dir}/{name}.pdf')
+    plt.close()
